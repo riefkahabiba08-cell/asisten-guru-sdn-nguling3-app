@@ -81,89 +81,113 @@ export function parseInstruksiSoal(rawText: string): ParsedAssignmentContent {
     return { intro: '', questions: [] };
   }
 
-  let rawLines = normalized.split('\n');
+  let textToSplit = normalized;
 
-  // Jika soal bernomor 1., 2., dst. masih menyatu dalam satu baris panjang, pecah terlebih dahulu
-  const lineStartNumberCount = rawLines.filter((l) =>
-    /^\s*\d{1,2}\.\s+/.test(l),
-  ).length;
+  // Jika nomor soal (1., 2., dst.) belum berada di awal baris, pecah terlebih dahulu
+  const existingLineMatches = Array.from(
+    textToSplit.matchAll(/(?:^|\n)\s*(\d+)\.\s+/g),
+  );
   if (
-    lineStartNumberCount < 2 &&
-    /(?:^|\s)1\.\s+/.test(normalized) &&
-    /\s2\.\s+/.test(normalized)
+    existingLineMatches.length < 2 &&
+    /(?:^|\s)1\.\s+/.test(textToSplit) &&
+    /\s2\.\s+/.test(textToSplit)
   ) {
-    rawLines = normalized
-      .replace(/\s+(?=\b([1-9]|[12]\d)\.\s+)/g, '\n')
-      .split('\n');
+    textToSplit = textToSplit.replace(/\s+(?=\b([1-9]|[12]\d)\.\s+)/g, '\n');
   }
 
-  const introLines: string[] = [];
-  const rawBlocks: Array<{
+  // Tahap 1: Pecah teks berdasarkan pola awal baris nomor soal (1., 2., 3., ...)
+  const rawMatches = Array.from(textToSplit.matchAll(/(?:^|\n)\s*(\d+)\.\s+/g));
+  const questionStarts: Array<{
     number: string;
-    sectionHeading?: string;
-    bodyLines: string[];
+    numValue: number;
+    matchIndex: number;
+    contentStart: number;
   }> = [];
 
-  let currentBlock: {
-    number: string;
-    sectionHeading?: string;
-    bodyLines: string[];
-  } | null = null;
   let lastQuestionNum = 0;
-  let pendingSectionHeading: string | undefined;
+  for (const m of rawMatches) {
+    const matchIndex = m.index ?? 0;
+    const numStr = m[1];
+    const numVal = Number(numStr);
+    const isValidNext =
+      questionStarts.length === 0
+        ? numVal === 1
+        : numVal > lastQuestionNum && numVal <= lastQuestionNum + 10;
 
-  for (const rawLine of rawLines) {
-    const trimmed = rawLine.trim();
-    const numMatch = trimmed.match(/^(\d{1,2})\.\s+(.+)$/);
-
-    if (numMatch) {
-      const num = Number(numMatch[1]);
-      const isValidSequence =
-        rawBlocks.length === 0
-          ? num === 1
-          : num > lastQuestionNum && num <= lastQuestionNum + 5;
-
-      if (isValidSequence) {
-        if (currentBlock) {
-          rawBlocks.push(currentBlock);
-        }
-        currentBlock = {
-          number: numMatch[1],
-          sectionHeading: pendingSectionHeading,
-          bodyLines: [numMatch[2].trim()],
-        };
-        pendingSectionHeading = undefined;
-        lastQuestionNum = num;
-        continue;
-      }
+    if (isValidNext) {
+      questionStarts.push({
+        number: numStr,
+        numValue: numVal,
+        matchIndex,
+        contentStart: matchIndex + m[0].length,
+      });
+      lastQuestionNum = numVal;
     }
-
-    if (!currentBlock) {
-      introLines.push(rawLine);
-    } else if (isSectionHeaderLine(trimmed)) {
-      pendingSectionHeading = trimmed;
-    } else {
-      currentBlock.bodyLines.push(rawLine);
-    }
-  }
-
-  if (currentBlock) {
-    rawBlocks.push(currentBlock);
   }
 
   // Jika tidak ditemukan struktur soal bernomor, kembalikan sebagai tugas teks bebas
-  if (rawBlocks.length === 0) {
+  if (questionStarts.length === 0) {
     return {
       intro: normalized,
       questions: [],
     };
   }
 
+  const intro = textToSplit.slice(0, questionStarts[0].matchIndex).trim();
+
+  const rawBlocks: Array<{
+    number: string;
+    sectionHeading?: string;
+    bodyLines: string[];
+  }> = [];
+
+  let pendingSectionHeading: string | undefined;
+
+  for (let i = 0; i < questionStarts.length; i++) {
+    const current = questionStarts[i];
+    const nextMatchIndex =
+      i + 1 < questionStarts.length
+        ? questionStarts[i + 1].matchIndex
+        : textToSplit.length;
+
+    const blockText = textToSplit
+      .slice(current.contentStart, nextMatchIndex)
+      .trim();
+    const lines = blockText.split('\n');
+
+    // Pisahkan judul bagian di akhir blok (sebelum nomor soal berikutnya) jika ada
+    let nextSectionHeading: string | undefined;
+    while (lines.length > 1) {
+      const lastTrimmed = lines[lines.length - 1].trim();
+      if (!lastTrimmed) {
+        lines.pop();
+        continue;
+      }
+      if (isSectionHeaderLine(lastTrimmed)) {
+        nextSectionHeading = nextSectionHeading
+          ? `${lastTrimmed}\n${nextSectionHeading}`
+          : lastTrimmed;
+        lines.pop();
+        continue;
+      }
+      break;
+    }
+
+    rawBlocks.push({
+      number: current.number,
+      sectionHeading: pendingSectionHeading,
+      bodyLines: lines,
+    });
+    pendingSectionHeading = nextSectionHeading;
+  }
+
+  // Tahap 2: Urai opsi A., B., C., D. secara terisolasi pada masing-masing kartu soal
   const questions: ParsedQuestion[] = rawBlocks.map((block) => {
     const expandedLines = splitInlineOptionsIfPresent(block.bodyLines);
     const promptLines: string[] = [];
     const options: QuestionOption[] = [];
     let currentOption: QuestionOption | null = null;
+    let sawBlankAfterOption = false;
 
     for (const line of expandedLines) {
       const trimmed = line.trim();
@@ -181,12 +205,15 @@ export function parseInstruksiSoal(rawText: string): ParsedAssignmentContent {
         if (isFirstOption || isFollowingOption) {
           currentOption = { label, text: optText };
           options.push(currentOption);
+          sawBlankAfterOption = false;
           continue;
         }
       }
 
       if (currentOption) {
-        if (trimmed) {
+        if (!trimmed) {
+          sawBlankAfterOption = true;
+        } else if (!sawBlankAfterOption) {
           currentOption.text = `${currentOption.text} ${trimmed}`.trim();
         }
       } else {
@@ -207,7 +234,7 @@ export function parseInstruksiSoal(rawText: string): ParsedAssignmentContent {
   });
 
   return {
-    intro: introLines.join('\n').trim(),
+    intro,
     questions,
   };
 }
