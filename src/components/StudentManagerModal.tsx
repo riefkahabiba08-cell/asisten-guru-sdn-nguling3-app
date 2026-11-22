@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type DragEvent,
   type FormEvent,
 } from 'react';
@@ -89,6 +90,31 @@ function parseBulkStudentsText(raw: string): {
   return { valid, invalidLines };
 }
 
+function extractImageFileFromClipboard(
+  clipboardData: DataTransfer | null,
+): File | null {
+  if (!clipboardData?.items) return null;
+  for (let i = 0; i < clipboardData.items.length; i++) {
+    const item = clipboardData.items[i];
+    if (item.type && item.type.startsWith('image/')) {
+      const blob = item.getAsFile();
+      if (blob) {
+        const ext =
+          item.type.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'png';
+        const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+        const fileName =
+          blob.name && blob.name !== 'image.png'
+            ? blob.name
+            : `screenshot-absen-${stamp}.${ext}`;
+        return new File([blob], fileName, {
+          type: blob.type || item.type || 'image/png',
+        });
+      }
+    }
+  }
+  return null;
+}
+
 export function StudentManagerModal({
   isOpen,
   onClose,
@@ -156,8 +182,6 @@ export function StudentManagerModal({
   }, [isOpen, loadStudents]);
 
   const parsedBulk = useMemo(() => parseBulkStudentsText(bulkText), [bulkText]);
-
-  if (!isOpen) return null;
 
   const handleAddStudent = async (e: FormEvent) => {
     e.preventDefault();
@@ -284,33 +308,56 @@ export function StudentManagerModal({
     }
   };
 
-  const processSelectedFile = async (file: File) => {
-    setError(null);
-    setFormFeedback(null);
-    setSelectedFileName(file.name);
-    setExtractingFile(true);
+  const processSelectedFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      setFormFeedback(null);
+      setSelectedFileName(file.name);
+      setExtractingFile(true);
 
-    try {
-      const existingPins = new Set(
-        students.map((s) => String(s.pin ?? '').trim()).filter(Boolean),
-      );
-      const res = await extractStudentsFromFileData(file, existingPins);
-      if (!res.ok || !res.data) {
-        setError(res.error || 'Gagal membaca daftar siswa dari file.');
-        return;
-      }
+      try {
+        const existingPins = new Set(
+          students.map((s) => String(s.pin ?? '').trim()).filter(Boolean),
+        );
+        const res = await extractStudentsFromFileData(file, existingPins);
+        if (!res.ok || !res.data) {
+          setError(res.error || 'Gagal membaca daftar siswa dari file.');
+          return;
+        }
 
-      setPreviewStudents(res.data);
-      setFormFeedback(
-        `Berhasil membaca ${res.data.length} siswa dari "${file.name}". Periksa atau ubah data di tabel pratinjau sebelum menyimpan ke database.`,
-      );
-    } finally {
-      setExtractingFile(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+        setPreviewStudents(res.data);
+        setFormFeedback(
+          `Berhasil membaca ${res.data.length} siswa dari "${file.name}". Periksa atau ubah data di tabel pratinjau sebelum menyimpan ke database.`,
+        );
+      } finally {
+        setExtractingFile(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
       }
-    }
-  };
+    },
+    [students],
+  );
+
+  useEffect(() => {
+    if (!isOpen || mode !== 'file') return;
+
+    const handleWindowPaste = (e: globalThis.ClipboardEvent) => {
+      if (extractingFile) return;
+      const imageFile = extractImageFileFromClipboard(e.clipboardData);
+      if (imageFile) {
+        e.preventDefault();
+        void processSelectedFile(imageFile);
+      }
+    };
+
+    window.addEventListener('paste', handleWindowPaste);
+    return () => {
+      window.removeEventListener('paste', handleWindowPaste);
+    };
+  }, [isOpen, mode, extractingFile, processSelectedFile]);
+
+  if (!isOpen) return null;
 
   const handleFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -325,6 +372,16 @@ export function StudentManagerModal({
     const file = e.dataTransfer.files?.[0];
     if (file) {
       void processSelectedFile(file);
+    }
+  };
+
+  const handleDropzonePaste = (e: ReactClipboardEvent<HTMLDivElement>) => {
+    if (extractingFile) return;
+    const imageFile = extractImageFileFromClipboard(e.clipboardData);
+    if (imageFile) {
+      e.preventDefault();
+      e.stopPropagation();
+      void processSelectedFile(imageFile);
     }
   };
 
@@ -651,13 +708,15 @@ export function StudentManagerModal({
           ) : (
             <div className="space-y-4">
               <div
+                tabIndex={0}
+                onPaste={handleDropzonePaste}
                 onDragOver={(e) => {
                   e.preventDefault();
                   setIsDraggingFile(true);
                 }}
                 onDragLeave={() => setIsDraggingFile(false)}
                 onDrop={handleFileDrop}
-                className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors ${
+                className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 ${
                   isDraggingFile
                     ? 'border-teal-600 bg-teal-50/70'
                     : 'border-slate-300 bg-slate-50/70 hover:border-teal-500'
@@ -683,12 +742,17 @@ export function StudentManagerModal({
                 <h3 className="text-sm font-semibold text-slate-900">
                   {extractingFile
                     ? `Membaca "${selectedFileName}" dengan Gemini AI...`
-                    : 'Unggah Daftar Absen Siswa (CSV, Excel, PDF, atau Foto)'}
+                    : 'Unggah Daftar Absen Siswa (CSV, Excel, PDF, Foto, atau Paste Screenshot)'}
                 </h3>
                 <p className="mt-1 text-xs text-slate-600 max-w-lg mx-auto leading-relaxed">
                   Gemini AI akan mengekstrak No. Absen, Nama Lengkap, serta
                   Kelas, lalu otomatis membuatkan PIN login 4 digit unik untuk
-                  setiap siswa jika file belum memiliki kolom PIN.
+                  setiap siswa. Guru juga bisa langsung menempel gambar atau
+                  screenshot daftar absen dengan menekan{' '}
+                  <kbd className="px-1.5 py-0.5 text-[11px] font-mono font-semibold text-slate-800 bg-white border border-slate-300 rounded">
+                    Ctrl + V
+                  </kbd>
+                  .
                 </p>
 
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
