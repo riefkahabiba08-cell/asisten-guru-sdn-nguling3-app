@@ -5,12 +5,13 @@ import { DashboardGuru } from './components/DashboardGuru';
 import { DatabaseSetupNotice } from './components/DatabaseSetupNotice';
 import { StudentManagerModal } from './components/StudentManagerModal';
 import { StudentLoginCardsModal } from './components/StudentLoginCardsModal';
+import { PrintableAssignmentModal } from './components/PrintableAssignmentModal';
 import {
   TEACHER_AUTH_STORAGE_KEY,
   TeacherAuthGate,
 } from './components/TeacherAuthGate';
 import { isClientSupabaseConfigured } from './lib/supabase';
-import type { ActiveTab, HealthStatus, Student } from './types';
+import type { ActiveTab, Assignment, HealthStatus, Student } from './types';
 
 function readInitialTeacherUnlocked(): boolean {
   try {
@@ -35,6 +36,8 @@ export default function App() {
   const [studentModalOpen, setStudentModalOpen] = useState(false);
   const [printCardsOpen, setPrintCardsOpen] = useState(false);
   const [printCardsStudents, setPrintCardsStudents] = useState<Student[]>([]);
+  const [printableAssignment, setPrintableAssignment] =
+    useState<Assignment | null>(null);
   const [teacherRefreshTrigger, setTeacherRefreshTrigger] = useState(0);
 
   useEffect(() => {
@@ -106,6 +109,7 @@ export default function App() {
     setTeacherUnlocked(false);
     setStudentModalOpen(false);
     setPrintCardsOpen(false);
+    setPrintableAssignment(null);
     setPendingStudentModalOpen(false);
     setTeacherAuthModalOpen(false);
   };
@@ -113,12 +117,14 @@ export default function App() {
   const hasValidSupabase = Boolean(
     health?.supabaseConfigured || isClientSupabaseConfigured,
   );
+  const hasActivePrintOverlay =
+    printCardsOpen || Boolean(printableAssignment);
 
   return (
     <>
       <div
         className={`min-h-screen flex flex-col bg-slate-50 text-slate-900 ${
-          printCardsOpen ? 'print:hidden' : ''
+          hasActivePrintOverlay ? 'print:hidden' : ''
         }`}
       >
         <TopBar
@@ -153,6 +159,9 @@ export default function App() {
               onTableMissing={handleTableMissing}
               onOpenStudentManager={handleOpenStudentManager}
               onOpenPrintCards={handleOpenPrintCards}
+              onOpenPrintableAssignment={(assignment) =>
+                setPrintableAssignment(assignment)
+              }
               onLockTeacher={handleLockTeacher}
             />
           ) : (
@@ -197,6 +206,13 @@ export default function App() {
           isOpen={printCardsOpen}
           onClose={() => setPrintCardsOpen(false)}
           initialStudents={printCardsStudents}
+        />
+      )}
+
+      {teacherUnlocked && printableAssignment && (
+        <PrintableAssignmentModal
+          assignment={printableAssignment}
+          onClose={() => setPrintableAssignment(null)}
         />
       )}
     </>

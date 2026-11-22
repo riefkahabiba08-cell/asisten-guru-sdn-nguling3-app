@@ -34,6 +34,7 @@ interface DashboardGuruProps {
   onTableMissing: (message: string) => void;
   onOpenStudentManager: () => void;
   onOpenPrintCards: (students: Student[]) => void;
+  onOpenPrintableAssignment: (assignment: Assignment) => void;
   onLockTeacher: () => void;
 }
 
@@ -42,6 +43,7 @@ export function DashboardGuru({
   onTableMissing,
   onOpenStudentManager,
   onOpenPrintCards,
+  onOpenPrintableAssignment,
   onLockTeacher,
 }: DashboardGuruProps) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -726,6 +728,14 @@ export function DashboardGuru({
                           </p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onOpenPrintableAssignment(a)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-md transition-colors whitespace-nowrap"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Cetak Soal</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() =>
