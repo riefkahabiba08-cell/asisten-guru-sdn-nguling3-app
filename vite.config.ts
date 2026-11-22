@@ -7,26 +7,30 @@ import {defineConfig, loadEnv} from 'vite';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
+function stripQuotes(val: string | undefined): string {
+  return (val || '').trim().replace(/^["']|["']$/g, '');
+}
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, currentDir, '');
-  const supabaseUrl = (
+  const supabaseUrl = stripQuotes(
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL ||
-    env.VITE_SUPABASE_URL ||
-    ''
-  )
-    .trim()
-    .replace(/^["']|["']$/g, '');
-  const supabaseAnonKey = (
+      env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.VITE_SUPABASE_URL ||
+      env.VITE_SUPABASE_URL,
+  );
+  const supabaseAnonKey = stripQuotes(
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    env.VITE_SUPABASE_ANON_KEY ||
-    ''
-  )
-    .trim()
-    .replace(/^["']|["']$/g, '');
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      env.VITE_SUPABASE_ANON_KEY,
+  );
+  const geminiApiKey = stripQuotes(
+    process.env.GEMINI_API_KEY ||
+      env.GEMINI_API_KEY ||
+      process.env.VITE_GEMINI_API_KEY ||
+      env.VITE_GEMINI_API_KEY,
+  );
 
   return {
     envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
@@ -35,6 +39,7 @@ export default defineConfig(({mode}) => {
       'process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(
         supabaseAnonKey,
       ),
+      'process.env.GEMINI_API_KEY': JSON.stringify(geminiApiKey),
     },
     plugins: [
       react(),

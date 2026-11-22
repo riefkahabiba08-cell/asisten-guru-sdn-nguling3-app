@@ -13,11 +13,11 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { fetchApiJson } from '../lib/api';
 import {
   createAssignmentData,
   deleteAssignmentData,
   fetchTeacherDashboardData,
+  generateAssignmentPackageData,
 } from '../lib/dataService';
 import type {
   Assignment,
@@ -116,33 +116,23 @@ export function DashboardGuru({
     setGeneratingAi(true);
 
     try {
-      const res = await fetchApiJson<{
-        generated: {
-          judul: string;
-          instruksi_soal: string;
-          kunci_rubrik: string;
-        };
-      }>('/api/assignments/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mata_pelajaran: mataPelajaran.trim() || 'Tematik SD',
-          kelas: kelasAi,
-          topik: topikMateri.trim(),
-          jumlah_soal: jumlahSoal,
-          jenis_soal: jenisSoal,
-        }),
+      const res = await generateAssignmentPackageData({
+        mata_pelajaran: mataPelajaran.trim() || 'Tematik SD',
+        kelas: kelasAi,
+        topik: topikMateri.trim(),
+        jumlah_soal: jumlahSoal,
+        jenis_soal: jenisSoal,
       });
 
-      if (!res.ok || !res.data?.generated) {
+      if (!res.ok || !res.data) {
         setAiError(
-          res.errorMessage ||
-            'Gagal membuat paket soal otomatis dengan AI. Pastikan server dan GEMINI_API_KEY aktif.',
+          res.error ||
+            'Gagal membuat paket soal otomatis dengan AI. Pastikan GEMINI_API_KEY sudah dikonfigurasi.',
         );
         return;
       }
 
-      const { generated } = res.data;
+      const generated = res.data;
       setJudul(generated.judul);
       setInstruksiSoal(generated.instruksi_soal);
       setKunciRubrik(generated.kunci_rubrik);

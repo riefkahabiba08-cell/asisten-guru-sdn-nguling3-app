@@ -8,9 +8,9 @@ import {
   Loader2,
   Send,
 } from 'lucide-react';
-import { fetchApiJson } from '../lib/api';
 import {
   fetchStudentWorkspaceData,
+  gradeAndSubmitAnswerData,
   loginStudentData,
 } from '../lib/dataService';
 import type { Assignment, Student, Submission } from '../types';
@@ -166,25 +166,21 @@ export function PortalSiswa({
     setGrading(true);
 
     try {
-      const res = await fetchApiJson<{ submission: Submission }>(
-        '/api/grade-and-submit',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            student_id: student.id,
-            assignment_id: activeAssignment.id,
-            jawaban_teks: trimmed,
-          }),
-        },
-      );
+      const res = await gradeAndSubmitAnswerData({
+        student,
+        assignment: activeAssignment,
+        jawaban_teks: trimmed,
+      });
 
-      if (!res.ok || !res.data?.submission) {
-        setSubmitError(res.errorMessage || 'Gagal mengoreksi dan menyimpan jawaban.');
+      if (!res.ok || !res.data) {
+        if (res.code === 'TABLE_MISSING' && res.error) {
+          onTableMissing(res.error);
+        }
+        setSubmitError(res.error || 'Gagal mengoreksi dan menyimpan jawaban.');
         return;
       }
 
-      const savedSub = res.data.submission;
+      const savedSub = res.data;
       setLatestResult(savedSub);
       setSubmissions((prev) => [savedSub, ...prev]);
       setJawabanTeks('');

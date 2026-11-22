@@ -18,11 +18,20 @@ export default function App() {
   const [teacherRefreshTrigger, setTeacherRefreshTrigger] = useState(0);
 
   useEffect(() => {
+    if (isClientSupabaseConfigured) {
+      setHealth({
+        ok: true,
+        supabaseConfigured: true,
+        geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      });
+      return;
+    }
+
     let active = true;
     fetch('/api/health')
-      .then((res) => res.json())
-      .then((data: HealthStatus) => {
-        if (active) {
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: HealthStatus | null) => {
+        if (active && data) {
           setHealth(data);
         }
       })
