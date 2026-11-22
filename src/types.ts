@@ -2,7 +2,15 @@ export interface Student {
   id: string | number;
   no_absen: string | number;
   nama_lengkap: string;
+  pin?: string;
   kelas?: string | null;
+}
+
+export interface StudentInput {
+  no_absen: string;
+  nama_lengkap: string;
+  pin: string;
+  kelas?: string;
 }
 
 export interface Assignment {
@@ -11,6 +19,14 @@ export interface Assignment {
   instruksi_soal: string;
   kunci_rubrik?: string;
   created_at?: string;
+}
+
+export interface GenerateAssignmentParams {
+  mata_pelajaran: string;
+  kelas: string;
+  topik: string;
+  jumlah_soal: number;
+  jenis_soal: 'Pilihan Ganda' | 'Isian Singkat' | 'Uraian' | 'Campuran';
 }
 
 export interface Submission {

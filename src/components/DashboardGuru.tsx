@@ -5,28 +5,54 @@ import {
   Download,
   Eye,
   Loader2,
+  PenLine,
   Plus,
   RefreshCw,
   Search,
   Trash2,
+  Users,
   X,
 } from 'lucide-react';
-import type { Assignment, Student, SubmissionWithDetails } from '../types';
+import { fetchApiJson } from '../lib/api';
+import {
+  createAssignmentData,
+  deleteAssignmentData,
+  fetchTeacherDashboardData,
+} from '../lib/dataService';
+import type {
+  Assignment,
+  GenerateAssignmentParams,
+  Student,
+  SubmissionWithDetails,
+} from '../types';
 
 interface DashboardGuruProps {
   refreshTrigger: number;
   onTableMissing: (message: string) => void;
+  onOpenStudentManager: () => void;
 }
 
 export function DashboardGuru({
   refreshTrigger,
   onTableMissing,
+  onOpenStudentManager,
 }: DashboardGuruProps) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionWithDetails[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Generator Paket Soal Otomatis (AI)
+  const [mataPelajaran, setMataPelajaran] = useState('IPAS');
+  const [kelasAi, setKelasAi] = useState('Kelas 5 SD');
+  const [topikMateri, setTopikMateri] = useState('');
+  const [jumlahSoal, setJumlahSoal] = useState(5);
+  const [jenisSoal, setJenisSoal] =
+    useState<GenerateAssignmentParams['jenis_soal']>('Pilihan Ganda');
+  const [generatingAi, setGeneratingAi] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiSuccess, setAiSuccess] = useState<string | null>(null);
 
   // Form Buat Tugas Baru
   const [judul, setJudul] = useState('');
@@ -55,41 +81,18 @@ export function DashboardGuru({
     setLoading(true);
     setLoadError(null);
     try {
-      const [assignRes, subRes, studRes] = await Promise.all([
-        fetch('/api/assignments?role=teacher'),
-        fetch('/api/submissions'),
-        fetch('/api/students'),
-      ]);
-
-      const [assignData, subData, studData] = await Promise.all([
-        assignRes.json(),
-        subRes.json(),
-        studRes.json(),
-      ]);
-
-      if (!assignRes.ok) {
-        if (assignData.code === 'TABLE_MISSING') {
-          onTableMissing(assignData.error);
+      const res = await fetchTeacherDashboardData();
+      if (!res.ok || !res.data) {
+        if (res.code === 'TABLE_MISSING' && res.error) {
+          onTableMissing(res.error);
         }
-        setLoadError(assignData.error || 'Gagal memuat data tugas.');
+        setLoadError(res.error || 'Gagal memuat data Dashboard Guru.');
         return;
       }
 
-      if (!subRes.ok) {
-        if (subData.code === 'TABLE_MISSING') {
-          onTableMissing(subData.error);
-        }
-        setLoadError(subData.error || 'Gagal memuat rekap nilai.');
-        return;
-      }
-
-      setAssignments(assignData.assignments || []);
-      setSubmissions(subData.submissions || []);
-      if (studRes.ok) {
-        setStudents(studData.students || []);
-      }
-    } catch {
-      setLoadError('Tidak dapat terhubung ke server untuk memuat Dashboard Guru.');
+      setAssignments(res.data.assignments);
+      setSubmissions(res.data.submissions);
+      setStudents(res.data.students);
     } finally {
       setLoading(false);
     }
@@ -99,6 +102,58 @@ export function DashboardGuru({
     fetchAllTeacherData();
   }, [fetchAllTeacherData, refreshTrigger]);
 
+  const handleGeneratePackageWithAi = async () => {
+    if (!topikMateri.trim()) {
+      setAiError(
+        'Masukkan Topik / Materi terlebih dahulu untuk membuat paket soal otomatis.',
+      );
+      return;
+    }
+
+    setAiError(null);
+    setAiSuccess(null);
+    setFormError(null);
+    setGeneratingAi(true);
+
+    try {
+      const res = await fetchApiJson<{
+        generated: {
+          judul: string;
+          instruksi_soal: string;
+          kunci_rubrik: string;
+        };
+      }>('/api/assignments/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mata_pelajaran: mataPelajaran.trim() || 'Tematik SD',
+          kelas: kelasAi,
+          topik: topikMateri.trim(),
+          jumlah_soal: jumlahSoal,
+          jenis_soal: jenisSoal,
+        }),
+      });
+
+      if (!res.ok || !res.data?.generated) {
+        setAiError(
+          res.errorMessage ||
+            'Gagal membuat paket soal otomatis dengan AI. Pastikan server dan GEMINI_API_KEY aktif.',
+        );
+        return;
+      }
+
+      const { generated } = res.data;
+      setJudul(generated.judul);
+      setInstruksiSoal(generated.instruksi_soal);
+      setKunciRubrik(generated.kunci_rubrik);
+      setAiSuccess(
+        `Paket ${jumlahSoal} soal (${jenisSoal}) beserta kunci jawaban dan rubrik berhasil dibuat. Silakan tinjau atau langsung klik Simpan Tugas Baru.`,
+      );
+    } finally {
+      setGeneratingAi(false);
+    }
+  };
+
   const handleCreateAssignment = async (e: FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -106,31 +161,28 @@ export function DashboardGuru({
     setCreating(true);
 
     try {
-      const res = await fetch('/api/assignments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          judul: judul.trim(),
-          instruksi_soal: instruksiSoal.trim(),
-          kunci_rubrik: kunciRubrik.trim(),
-        }),
+      const res = await createAssignmentData({
+        judul: judul.trim(),
+        instruksi_soal: instruksiSoal.trim(),
+        kunci_rubrik: kunciRubrik.trim(),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.code === 'TABLE_MISSING') {
-          onTableMissing(data.error);
+
+      if (!res.ok || !res.data) {
+        if (res.code === 'TABLE_MISSING' && res.error) {
+          onTableMissing(res.error);
         }
-        setFormError(data.error || 'Gagal menyimpan tugas baru.');
+        setFormError(res.error || 'Gagal menyimpan tugas baru.');
         return;
       }
 
+      const createdTitle = res.data.judul;
       setJudul('');
       setInstruksiSoal('');
       setKunciRubrik('');
-      setFormSuccess(`Tugas "${data.assignment.judul}" berhasil diterbitkan.`);
+      setTopikMateri('');
+      setAiSuccess(null);
+      setFormSuccess(`Tugas "${createdTitle}" berhasil disimpan ke Supabase.`);
       await fetchAllTeacherData();
-    } catch {
-      setFormError('Gangguan koneksi saat menyimpan tugas baru.');
     } finally {
       setCreating(false);
     }
@@ -139,9 +191,7 @@ export function DashboardGuru({
   const handleDeleteAssignment = async (id: string | number) => {
     setDeletingId(id);
     try {
-      const res = await fetch(`/api/assignments/${encodeURIComponent(String(id))}`, {
-        method: 'DELETE',
-      });
+      const res = await deleteAssignmentData(id);
       if (res.ok) {
         setConfirmDeleteId(null);
         await fetchAllTeacherData();
@@ -169,7 +219,10 @@ export function DashboardGuru({
 
   const averageScore = useMemo(() => {
     if (filteredSubmissions.length === 0) return null;
-    const total = filteredSubmissions.reduce((acc, s) => acc + Number(s.nilai || 0), 0);
+    const total = filteredSubmissions.reduce(
+      (acc, s) => acc + Number(s.nilai || 0),
+      0,
+    );
     return (total / filteredSubmissions.length).toFixed(1);
   }, [filteredSubmissions]);
 
@@ -198,14 +251,15 @@ export function DashboardGuru({
       escapeCsv(s.umpan_balik_ai),
       escapeCsv(s.created_at || ''),
     ]);
-    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join(
-      '\n',
-    );
+    const csvContent = [
+      headers.join(','),
+      ...rows.map((r) => r.join(',')),
+    ].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `rekap-nilai-sdn-nguling-3.csv`;
+    a.download = 'rekap-nilai-sdn-nguling-3.csv';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -221,15 +275,25 @@ export function DashboardGuru({
             Dashboard Guru
           </h1>
         </div>
-        <button
-          type="button"
-          onClick={fetchAllTeacherData}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          <span>Muat Ulang Data</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onOpenStudentManager}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+          >
+            <Users className="w-4 h-4" />
+            <span>Kelola Data Siswa</span>
+          </button>
+          <button
+            type="button"
+            onClick={fetchAllTeacherData}
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <span>Muat Ulang Data</span>
+          </button>
+        </div>
       </div>
 
       <section
@@ -287,9 +351,182 @@ export function DashboardGuru({
               Buat Tugas Baru
             </h2>
             <p className="mt-1 text-xs text-slate-600 leading-relaxed">
-              Tugas akan langsung muncul di Portal Siswa dan dinilai menggunakan
-              model AI berdasarkan kunci rubrik di bawah ini.
+              Buat paket soal secara otomatis dengan AI dalam satu klik atau isi
+              formulir secara manual untuk diterbitkan ke Portal Siswa.
             </p>
+          </div>
+
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3.5">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">
+                Generator Paket Soal Otomatis (AI)
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Tentukan detail paket soal agar AI menyusun seluruh soal, kunci
+                jawaban, dan rubrik penilaiannya secara otomatis.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="ai-subject"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Mata Pelajaran
+                </label>
+                <input
+                  id="ai-subject"
+                  type="text"
+                  list="sd-subjects-list"
+                  disabled={generatingAi}
+                  placeholder="Contoh: Matematika"
+                  value={mataPelajaran}
+                  onChange={(e) => setMataPelajaran(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+                />
+                <datalist id="sd-subjects-list">
+                  <option value="Bahasa Indonesia" />
+                  <option value="Matematika" />
+                  <option value="IPAS" />
+                  <option value="Pendidikan Pancasila" />
+                  <option value="PJOK" />
+                  <option value="Seni Budaya" />
+                  <option value="Bahasa Inggris" />
+                  <option value="Pendidikan Agama" />
+                </datalist>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="ai-grade"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Kelas
+                </label>
+                <select
+                  id="ai-grade"
+                  value={kelasAi}
+                  onChange={(e) => setKelasAi(e.target.value)}
+                  disabled={generatingAi}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+                >
+                  <option value="Kelas 1 SD">Kelas 1 SD</option>
+                  <option value="Kelas 2 SD">Kelas 2 SD</option>
+                  <option value="Kelas 3 SD">Kelas 3 SD</option>
+                  <option value="Kelas 4 SD">Kelas 4 SD</option>
+                  <option value="Kelas 5 SD">Kelas 5 SD</option>
+                  <option value="Kelas 6 SD">Kelas 6 SD</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="ai-topic"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Topik / Materi
+              </label>
+              <input
+                id="ai-topic"
+                type="text"
+                disabled={generatingAi}
+                placeholder="Contoh: Rantai makanan dan keseimbangan ekosistem"
+                value={topikMateri}
+                onChange={(e) => setTopikMateri(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="ai-count"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Jumlah Soal
+                </label>
+                <input
+                  id="ai-count"
+                  type="number"
+                  min={1}
+                  max={25}
+                  disabled={generatingAi}
+                  value={jumlahSoal}
+                  onChange={(e) =>
+                    setJumlahSoal(
+                      Math.max(1, Math.min(25, Number(e.target.value) || 1)),
+                    )
+                  }
+                  className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="ai-type"
+                  className="block text-xs font-medium text-slate-700 mb-1"
+                >
+                  Jenis Soal
+                </label>
+                <select
+                  id="ai-type"
+                  value={jenisSoal}
+                  onChange={(e) =>
+                    setJenisSoal(
+                      e.target.value as GenerateAssignmentParams['jenis_soal'],
+                    )
+                  }
+                  disabled={generatingAi}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+                >
+                  <option value="Pilihan Ganda">Pilihan Ganda</option>
+                  <option value="Isian Singkat">Isian Singkat</option>
+                  <option value="Uraian">Uraian</option>
+                  <option value="Campuran">Campuran</option>
+                </select>
+              </div>
+            </div>
+
+            {aiError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 p-3 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg"
+              >
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{aiError}</span>
+              </div>
+            )}
+
+            {aiSuccess && (
+              <div
+                role="status"
+                className="flex items-start gap-2 p-3 text-xs text-teal-900 bg-teal-50 border border-teal-200 rounded-lg"
+              >
+                <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
+                <span>{aiSuccess}</span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleGeneratePackageWithAi}
+              disabled={generatingAi || !topikMateri.trim()}
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-300 disabled:opacity-60 rounded-lg transition-colors min-h-[42px]"
+            >
+              {generatingAi ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-teal-700" />
+                  <span>Menyusun {jumlahSoal} Soal & Kunci Jawaban...</span>
+                </>
+              ) : (
+                <>
+                  <PenLine className="w-4 h-4 text-teal-700" />
+                  <span>Buat Paket Soal Otomatis (AI)</span>
+                </>
+              )}
+            </button>
           </div>
 
           <form onSubmit={handleCreateAssignment} className="space-y-4">
@@ -304,7 +541,7 @@ export function DashboardGuru({
                 id="assignment-title"
                 type="text"
                 required
-                placeholder="Contoh: Bahasa Indonesia - Ringkasan Cerita Rakyat"
+                placeholder="Contoh: IPAS Kelas 5 SD - Rantai Makanan"
                 value={judul}
                 onChange={(e) => setJudul(e.target.value)}
                 className="w-full px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[42px]"
@@ -316,13 +553,13 @@ export function DashboardGuru({
                 htmlFor="assignment-instructions"
                 className="block text-sm font-medium text-slate-800 mb-1.5"
               >
-                Instruksi & Soal
+                Instruksi & Daftar Soal
               </label>
               <textarea
                 id="assignment-instructions"
-                rows={4}
+                rows={6}
                 required
-                placeholder="Tuliskan pertanyaan atau petunjuk pengerjaan untuk siswa..."
+                placeholder="Tuliskan petunjuk pengerjaan dan daftar pertanyaan untuk siswa..."
                 value={instruksiSoal}
                 onChange={(e) => setInstruksiSoal(e.target.value)}
                 className="w-full p-3 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 leading-relaxed"
@@ -338,9 +575,9 @@ export function DashboardGuru({
               </label>
               <textarea
                 id="assignment-rubric"
-                rows={4}
+                rows={5}
                 required
-                placeholder="Contoh: Skor 100 jika menyebutkan tokoh utama, latar tempat, dan pesan moral dengan tepat. Skor 70-85 jika kurang satu unsur..."
+                placeholder="Kunci jawaban bernomor dan pedoman penilaian skor 0-100..."
                 value={kunciRubrik}
                 onChange={(e) => setKunciRubrik(e.target.value)}
                 className="w-full p-3 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 leading-relaxed"
@@ -408,7 +645,10 @@ export function DashboardGuru({
                   const isConfirmingDelete =
                     String(confirmDeleteId) === String(a.id);
                   return (
-                    <li key={String(a.id)} className="py-3.5 first:pt-0 last:pb-0">
+                    <li
+                      key={String(a.id)}
+                      className="py-3.5 first:pt-0 last:pb-0"
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <h4 className="text-sm font-semibold text-slate-900">

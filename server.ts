@@ -71,6 +71,32 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+  maxAttempts = 3,
+) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (err: unknown) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTransient =
+        msg.includes('503') ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED');
+      if (!isTransient || attempt === maxAttempts) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 900));
+    }
+  }
+  throw lastError;
+}
+
 function normalizeNoAbsen(value: string | number | null | undefined): string {
   const raw = String(value ?? '').trim();
   if (/^\d+$/.test(raw)) {
@@ -204,6 +230,7 @@ async function startServer() {
       id: row.id,
       no_absen: row.no_absen,
       nama_lengkap: extractStudentName(row),
+      pin: String(row.pin ?? ''),
       kelas: row.kelas ?? null,
     }));
 
@@ -263,9 +290,171 @@ async function startServer() {
         id: data.id,
         no_absen: data.no_absen,
         nama_lengkap: extractStudentName(data),
+        pin: String(data.pin ?? ''),
         kelas: data.kelas ?? null,
       },
     });
+  });
+
+  app.post('/api/students/bulk', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const rawList = Array.isArray(req.body?.students) ? req.body.students : [];
+    if (rawList.length === 0) {
+      return res.status(400).json({
+        error: 'Daftar siswa yang akan diimpor tidak boleh kosong.',
+      });
+    }
+
+    const payloads = rawList
+      .map((item: Record<string, unknown>) => {
+        const no_absen = String(item.no_absen ?? '').trim();
+        const nama_lengkap = String(
+          item.nama_lengkap ?? item.nama ?? '',
+        ).trim();
+        const pin = String(item.pin ?? '').trim();
+        const kelas = String(item.kelas ?? '').trim();
+        if (!no_absen || !nama_lengkap || !pin) return null;
+        return kelas
+          ? { no_absen, nama_lengkap, pin, kelas }
+          : { no_absen, nama_lengkap, pin };
+      })
+      .filter(Boolean) as Record<string, unknown>[];
+
+    if (payloads.length === 0) {
+      return res.status(400).json({
+        error:
+          'Format data tidak valid. Pastikan setiap baris memiliki no_absen, nama_lengkap, dan pin.',
+      });
+    }
+
+    let { data, error } = await supabase
+      .from('students')
+      .upsert(payloads, { onConflict: 'no_absen' })
+      .select('*');
+
+    if (error && error.message?.includes('kelas')) {
+      const withoutKelas = payloads.map(({ no_absen, nama_lengkap, pin }) => ({
+        no_absen,
+        nama_lengkap,
+        pin,
+      }));
+      const retry = await supabase
+        .from('students')
+        .upsert(withoutKelas, { onConflict: 'no_absen' })
+        .select('*');
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      // Fallback ke insert biasa jika tidak ada unique constraint pada no_absen
+      const fallback = await supabase
+        .from('students')
+        .insert(payloads)
+        .select('*');
+      if (fallback.error) {
+        const mapped = mapSupabaseError(fallback.error);
+        return res.status(mapped.status).json(mapped.body);
+      }
+      data = fallback.data;
+    }
+
+    const students = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      no_absen: row.no_absen,
+      nama_lengkap: extractStudentName(row),
+      pin: String(row.pin ?? ''),
+      kelas: row.kelas ?? null,
+    }));
+
+    return res.status(201).json({ students, count: students.length });
+  });
+
+  app.patch('/api/students/:id', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { id } = req.params;
+    const { no_absen, nama_lengkap, nama, pin, kelas } = req.body ?? {};
+    const fullName = String(nama_lengkap ?? nama ?? '').trim();
+    if (!no_absen || !fullName || !pin) {
+      return res.status(400).json({
+        error: 'Nomor absen, nama lengkap, dan PIN wajib diisi.',
+      });
+    }
+
+    const updates: Record<string, unknown> = {
+      no_absen: String(no_absen).trim(),
+      nama_lengkap: fullName,
+      pin: String(pin).trim(),
+      kelas: kelas && String(kelas).trim() ? String(kelas).trim() : null,
+    };
+
+    let { data, error } = await supabase
+      .from('students')
+      .update(updates)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error && error.message?.includes('kelas')) {
+      delete updates.kelas;
+      const retry = await supabase
+        .from('students')
+        .update(updates)
+        .eq('id', id)
+        .select('*')
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.json({
+      student: {
+        id: data.id,
+        no_absen: data.no_absen,
+        nama_lengkap: extractStudentName(data),
+        pin: String(data.pin ?? ''),
+        kelas: data.kelas ?? null,
+      },
+    });
+  });
+
+  app.delete('/api/students/:id', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { id } = req.params;
+    const { error } = await supabase.from('students').delete().eq('id', id);
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.json({ deleted: true });
   });
 
   app.get('/api/assignments', async (req: Request, res: Response) => {
@@ -314,6 +503,116 @@ async function startServer() {
     }
 
     return res.json({ assignments: data || [] });
+  });
+
+  app.post('/api/assignments/generate', async (req: Request, res: Response) => {
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error:
+          'GEMINI_API_KEY belum tersedia di lingkungan server. Silakan atur di panel Secrets.',
+        code: 'GEMINI_NOT_CONFIGURED',
+      });
+    }
+
+    const {
+      mata_pelajaran,
+      kelas,
+      topik,
+      jumlah_soal,
+      jenis_soal,
+      perintah,
+    } = req.body ?? {};
+
+    const cleanSubject = String(mata_pelajaran ?? '').trim();
+    const cleanGrade = String(kelas ?? '').trim();
+    const cleanTopic = String(topik ?? perintah ?? '').trim();
+    const count = Math.max(1, Math.min(25, Number(jumlah_soal) || 5));
+    const questionType = String(jenis_soal ?? 'Uraian').trim();
+
+    if (!cleanTopic) {
+      return res.status(400).json({
+        error: 'Topik atau materi soal wajib diisi terlebih dahulu.',
+      });
+    }
+
+    const userPrompt = [
+      `Mata Pelajaran: ${cleanSubject || 'Tematik SD'}`,
+      `Tingkat Kelas: ${cleanGrade || 'Sekolah Dasar (SD)'}`,
+      `Topik / Materi: ${cleanTopic}`,
+      `Jumlah Soal: ${count} butir soal`,
+      `Jenis Soal: ${questionType}`,
+      '',
+      `Tugas Anda:`,
+      `1. Buatlah tepat ${count} butir soal bertipe "${questionType}" yang sesuai dengan tingkat pemahaman siswa ${cleanGrade || 'SD'} tentang topik "${cleanTopic}".`,
+      questionType === 'Pilihan Ganda'
+        ? '2. Untuk setiap soal Pilihan Ganda, sertakan 4 pilihan jawaban (A, B, C, D) yang rapi dan jelas di bawah masing-masing nomor soal.'
+        : questionType === 'Campuran'
+          ? '2. Kombinasikan soal Pilihan Ganda (dengan opsi A, B, C, D) dan soal Isian Singkat / Uraian secara proporsional hingga genap berjumlah sesuai jumlah soal.'
+          : '2. Tuliskan seluruh daftar soal bernomor urut 1 sampai selesai di bagian instruksi_soal beserta petunjuk pengerjaan yang ramah bagi siswa SD.',
+      `3. Pada bagian kunci_rubrik, tuliskan kunci jawaban lengkap bernomor 1 sampai ${count} secara berurutan, ditambah rubrik penilaian dan pembobotan skor total 0-100 agar mudah dikoreksi otomatis.`,
+    ].join('\n');
+
+    try {
+      const response = await generateContentWithRetry(ai, {
+        model: 'gemini-4-hydrogen',
+        contents: userPrompt,
+        config: {
+          systemInstruction:
+            'Anda adalah asisten penyusun paket soal Sekolah Dasar (SD) di SDN Nguling 3 yang menguasai Kurikulum Merdeka. Susun paket soal multi-nomor yang jelas, bebas typo, edukatif untuk siswa SD, serta lengkapi dengan kunci jawaban bernomor lengkap dan rubrik penilaian skala 0-100.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              judul: {
+                type: Type.STRING,
+                description:
+                  'Judul tugas yang jelas, contoh: "IPAS Kelas 5 SD - Rantai Makanan (5 Soal Pilihan Ganda)".',
+              },
+              instruksi_soal: {
+                type: Type.STRING,
+                description:
+                  'Petunjuk pengerjaan singkat diikuti seluruh daftar soal bernomor 1 sampai N secara lengkap.',
+              },
+              kunci_rubrik: {
+                type: Type.STRING,
+                description:
+                  'Kunci jawaban lengkap untuk setiap nomor soal (1 sampai N) beserta rubrik pembobotan nilai total 0-100.',
+              },
+            },
+            required: ['judul', 'instruksi_soal', 'kunci_rubrik'],
+          },
+        },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        return res.status(502).json({
+          error: 'Gemini AI tidak mengembalikan draf soal. Silakan coba lagi.',
+        });
+      }
+
+      const parsed = JSON.parse(rawText) as {
+        judul?: string;
+        instruksi_soal?: string;
+        kunci_rubrik?: string;
+      };
+
+      return res.json({
+        generated: {
+          judul: String(parsed.judul ?? '').trim(),
+          instruksi_soal: String(parsed.instruksi_soal ?? '').trim(),
+          kunci_rubrik: String(parsed.kunci_rubrik ?? '').trim(),
+        },
+      });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Gagal menghubungi layanan Gemini AI.';
+      console.error('Gemini question generation error:', message);
+      return res.status(502).json({
+        error: `Pembuatan soal dengan AI gagal: ${message}`,
+      });
+    }
   });
 
   app.post('/api/assignments', async (req: Request, res: Response) => {
@@ -525,8 +824,8 @@ async function startServer() {
         'Berikan penilaian angka bulat 0-100 yang adil sesuai kunci rubrik untuk tingkat Sekolah Dasar (SD), serta umpan balik yang ramah, jelas, menyemangati, dan menjelaskan bagian mana yang sudah tepat serta apa yang perlu diperbaiki.',
       ].join('\n\n');
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await generateContentWithRetry(ai, {
+        model: 'gemini-4-hydrogen',
         contents: prompt,
         config: {
           systemInstruction:

@@ -34,6 +34,23 @@ CREATE TABLE IF NOT EXISTS submissions (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Pastikan kebijakan akses (RLS) mengizinkan SELECT, INSERT, UPDATE, DELETE
+ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE submissions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow full access students" ON students;
+CREATE POLICY "Allow full access students" ON students
+  FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access assignments" ON assignments;
+CREATE POLICY "Allow full access assignments" ON assignments
+  FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access submissions" ON submissions;
+CREATE POLICY "Allow full access submissions" ON submissions
+  FOR ALL USING (true) WITH CHECK (true);
+
 -- Contoh data awal siswa untuk uji coba
 INSERT INTO students (no_absen, nama_lengkap, pin, kelas) VALUES
   ('01', 'Ahmad Fauzan', '1234', 'Kelas 5A'),

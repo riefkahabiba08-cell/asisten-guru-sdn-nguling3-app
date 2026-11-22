@@ -8,6 +8,11 @@ import {
   Loader2,
   Send,
 } from 'lucide-react';
+import { fetchApiJson } from '../lib/api';
+import {
+  fetchStudentWorkspaceData,
+  loginStudentData,
+} from '../lib/dataService';
 import type { Assignment, Student, Submission } from '../types';
 
 interface PortalSiswaProps {
@@ -48,28 +53,18 @@ export function PortalSiswa({
       setLoadingWorkspace(true);
       setWorkspaceError(null);
       try {
-        const [assignRes, subRes] = await Promise.all([
-          fetch('/api/assignments?role=student'),
-          fetch(`/api/submissions?student_id=${encodeURIComponent(String(studentId))}`),
-        ]);
-
-        const assignData = await assignRes.json();
-        const subData = await subRes.json();
-
-        if (!assignRes.ok) {
-          if (assignData.code === 'TABLE_MISSING') {
-            onTableMissing(assignData.error);
+        const res = await fetchStudentWorkspaceData(studentId);
+        if (!res.ok || !res.data) {
+          if (res.code === 'TABLE_MISSING' && res.error) {
+            onTableMissing(res.error);
           }
-          setWorkspaceError(assignData.error || 'Gagal memuat daftar tugas.');
+          setWorkspaceError(res.error || 'Gagal memuat daftar tugas.');
           return;
         }
 
-        const loadedAssignments: Assignment[] = assignData.assignments || [];
+        const loadedAssignments = res.data.assignments;
         setAssignments(loadedAssignments);
-
-        if (subRes.ok) {
-          setSubmissions(subData.submissions || []);
-        }
+        setSubmissions(res.data.submissions);
 
         if (loadedAssignments.length > 0) {
           setSelectedAssignmentId((prev) => {
@@ -81,8 +76,6 @@ export function PortalSiswa({
         } else {
           setSelectedAssignmentId(null);
         }
-      } catch {
-        setWorkspaceError('Tidak dapat terhubung ke server untuk memuat tugas.');
       } finally {
         setLoadingWorkspace(false);
       }
@@ -137,26 +130,16 @@ export function PortalSiswa({
     setLoginError(null);
     setLoginLoading(true);
     try {
-      const res = await fetch('/api/students/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          no_absen: noAbsen.trim(),
-          pin: pin.trim(),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.code === 'TABLE_MISSING') {
-          onTableMissing(data.error);
+      const res = await loginStudentData(noAbsen.trim(), pin.trim());
+      if (!res.ok || !res.data) {
+        if (res.code === 'TABLE_MISSING' && res.error) {
+          onTableMissing(res.error);
         }
-        setLoginError(data.error || 'Gagal masuk ke Portal Siswa.');
+        setLoginError(res.error || 'Gagal masuk ke Portal Siswa.');
         return;
       }
       setPin('');
-      onLoginSuccess(data.student);
-    } catch {
-      setLoginError('Terjadi gangguan koneksi saat menghubungi server.');
+      onLoginSuccess(res.data);
     } finally {
       setLoginLoading(false);
     }
@@ -183,30 +166,28 @@ export function PortalSiswa({
     setGrading(true);
 
     try {
-      const res = await fetch('/api/grade-and-submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          student_id: student.id,
-          assignment_id: activeAssignment.id,
-          jawaban_teks: trimmed,
-        }),
-      });
+      const res = await fetchApiJson<{ submission: Submission }>(
+        '/api/grade-and-submit',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            student_id: student.id,
+            assignment_id: activeAssignment.id,
+            jawaban_teks: trimmed,
+          }),
+        },
+      );
 
-      const data = await res.json();
-      if (!res.ok) {
-        setSubmitError(data.error || 'Gagal mengoreksi dan menyimpan jawaban.');
+      if (!res.ok || !res.data?.submission) {
+        setSubmitError(res.errorMessage || 'Gagal mengoreksi dan menyimpan jawaban.');
         return;
       }
 
-      const savedSub: Submission = data.submission;
+      const savedSub = res.data.submission;
       setLatestResult(savedSub);
       setSubmissions((prev) => [savedSub, ...prev]);
       setJawabanTeks('');
-    } catch {
-      setSubmitError(
-        'Koneksi terputus saat mengirim jawaban ke layanan koreksi AI.',
-      );
     } finally {
       setGrading(false);
     }

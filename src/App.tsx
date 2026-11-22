@@ -81,6 +81,7 @@ export default function App() {
           <DashboardGuru
             refreshTrigger={teacherRefreshTrigger}
             onTableMissing={handleTableMissing}
+            onOpenStudentManager={() => setStudentModalOpen(true)}
           />
         )}
       </div>
