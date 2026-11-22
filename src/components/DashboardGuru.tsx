@@ -644,7 +644,7 @@ export function DashboardGuru({
                           <h4 className="text-sm font-semibold text-slate-900">
                             {a.judul}
                           </h4>
-                          <p className="mt-1 text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                          <p className="mt-1 text-xs text-slate-600 line-clamp-2 whitespace-pre-line leading-relaxed">
                             {a.instruksi_soal}
                           </p>
                         </div>
@@ -688,12 +688,26 @@ export function DashboardGuru({
                           )}
                         </div>
                       </div>
-                      {isExpanded && a.kunci_rubrik && (
-                        <div className="mt-2.5 p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 whitespace-pre-wrap leading-relaxed">
-                          <span className="font-semibold text-slate-900 block mb-1">
-                            Kunci Rubrik:
-                          </span>
-                          {a.kunci_rubrik}
+                      {isExpanded && (
+                        <div className="mt-2.5 p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 space-y-3">
+                          <div>
+                            <span className="font-semibold text-slate-900 block mb-1">
+                              Instruksi & Daftar Soal:
+                            </span>
+                            <div className="whitespace-pre-line leading-relaxed">
+                              {a.instruksi_soal}
+                            </div>
+                          </div>
+                          {a.kunci_rubrik && (
+                            <div className="pt-2.5 border-t border-slate-200">
+                              <span className="font-semibold text-slate-900 block mb-1">
+                                Kunci Jawaban & Rubrik:
+                              </span>
+                              <div className="whitespace-pre-line leading-relaxed">
+                                {a.kunci_rubrik}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </li>

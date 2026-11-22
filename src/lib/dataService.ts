@@ -188,6 +188,15 @@ async function callGeminiRestClient<T>(params: {
   };
 }
 
+function formatMultilineQuestionText(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\s+(?=\b([1-9]|[12]\d)\.\s)/g, '\n\n')
+    .replace(/(?<!\d\.)\s+(?=[A-D]\.\s)/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export async function generateAssignmentPackageData(
   params: GenerateAssignmentParams,
 ): Promise<
@@ -221,12 +230,13 @@ export async function generateAssignmentPackageData(
       '',
       'Tugas Anda:',
       `1. Buatlah tepat ${count} butir soal bertipe "${questionType}" yang sesuai dengan tingkat pemahaman siswa ${cleanGrade || 'SD'} tentang topik "${cleanTopic}".`,
+      '2. ATURAN FORMAT WAJIB (Baris Baru): Pada field instruksi_soal, setiap nomor soal (1., 2., 3., dst.) WAJIB dipisahkan dengan baris baru (\\n\\n) agar tidak menyatu dalam satu paragraf.',
       questionType === 'Pilihan Ganda'
-        ? '2. Untuk setiap soal Pilihan Ganda, sertakan 4 pilihan jawaban (A, B, C, D) yang rapi dan jelas di bawah masing-masing nomor soal.'
+        ? '3. Untuk setiap soal Pilihan Ganda, tuliskan 4 opsi jawaban (A., B., C., D.) dan WAJIB letakkan setiap opsi pada baris baru terpisah (\\nA. ...\\nB. ...\\nC. ...\\nD. ...).'
         : questionType === 'Campuran'
-          ? '2. Kombinasikan soal Pilihan Ganda (dengan opsi A, B, C, D) dan soal Isian Singkat / Uraian secara proporsional hingga genap berjumlah sesuai jumlah soal.'
-          : '2. Tuliskan seluruh daftar soal bernomor urut 1 sampai selesai di bagian instruksi_soal beserta petunjuk pengerjaan yang ramah bagi siswa SD.',
-      `3. Pada bagian kunci_rubrik, tuliskan kunci jawaban lengkap bernomor 1 sampai ${count} secara berurutan, ditambah rubrik penilaian dan pembobotan skor total 0-100 agar mudah dikoreksi otomatis.`,
+          ? '3. Kombinasikan soal Pilihan Ganda (dengan masing-masing opsi A., B., C., D. pada baris baru terpisah) dan soal Isian Singkat / Uraian secara proporsional hingga genap berjumlah sesuai jumlah soal.'
+          : '3. Tuliskan petunjuk pengerjaan di baris paling atas, lalu pisahkan setiap nomor soal (1., 2., 3., dst.) pada baris baru yang rapi.',
+      `4. Pada bagian kunci_rubrik, tuliskan kunci jawaban bernomor 1 sampai ${count} dengan setiap nomor berada pada baris baru (\\n), diikuti bagian Rubrik Penilaian (skala 0-100) pada paragraf baru yang rapi.`,
     ].join('\n');
 
     const aiRes = await callGeminiRestClient<{
@@ -235,7 +245,7 @@ export async function generateAssignmentPackageData(
       kunci_rubrik?: string;
     }>({
       systemInstruction:
-        'Anda adalah asisten penyusun paket soal Sekolah Dasar (SD) di SDN Nguling 3 yang menguasai Kurikulum Merdeka. Susun paket soal multi-nomor yang jelas, bebas typo, edukatif untuk siswa SD, serta lengkapi dengan kunci jawaban bernomor lengkap dan rubrik penilaian skala 0-100.',
+        'Anda adalah asisten penyusun paket soal Sekolah Dasar (SD) di SDN Nguling 3 yang menguasai Kurikulum Merdeka. Susun paket soal multi-nomor yang jelas, bebas typo, edukatif untuk siswa SD. Selalu gunakan karakter baris baru (\\n) untuk memisahkan setiap nomor soal (1., 2., 3., dst.), setiap opsi pilihan ganda (A., B., C., D.), dan setiap nomor kunci jawaban agar tampilan selalu rapi dan terstruktur.',
       userPrompt,
       responseSchema: {
         type: 'OBJECT',
@@ -248,12 +258,12 @@ export async function generateAssignmentPackageData(
           instruksi_soal: {
             type: 'STRING',
             description:
-              'Petunjuk pengerjaan singkat diikuti seluruh daftar soal bernomor 1 sampai N secara lengkap.',
+              'Petunjuk pengerjaan singkat diikuti daftar soal bernomor 1 sampai N, dengan setiap nomor soal dipisahkan \\n\\n dan setiap opsi A., B., C., D. dipisahkan \\n.',
           },
           kunci_rubrik: {
             type: 'STRING',
             description:
-              'Kunci jawaban lengkap untuk setiap nomor soal (1 sampai N) beserta rubrik pembobotan nilai total 0-100.',
+              'Kunci jawaban lengkap bernomor 1 sampai N pada baris terpisah (\\n) beserta rubrik pembobotan nilai total 0-100.',
           },
         },
         required: ['judul', 'instruksi_soal', 'kunci_rubrik'],
@@ -265,8 +275,12 @@ export async function generateAssignmentPackageData(
         ok: true,
         data: {
           judul: String(aiRes.data.judul ?? '').trim(),
-          instruksi_soal: String(aiRes.data.instruksi_soal ?? '').trim(),
-          kunci_rubrik: String(aiRes.data.kunci_rubrik ?? '').trim(),
+          instruksi_soal: formatMultilineQuestionText(
+            String(aiRes.data.instruksi_soal ?? ''),
+          ),
+          kunci_rubrik: formatMultilineQuestionText(
+            String(aiRes.data.kunci_rubrik ?? ''),
+          ),
         },
       };
     }

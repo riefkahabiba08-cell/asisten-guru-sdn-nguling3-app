@@ -411,7 +411,7 @@ export function PortalSiswa({
                     <h3 className="mt-1.5 text-sm font-semibold text-slate-900 line-clamp-2">
                       {assignment.judul}
                     </h3>
-                    <p className="mt-1 text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                    <p className="mt-1 text-xs text-slate-600 line-clamp-2 whitespace-pre-line leading-relaxed">
                       {assignment.instruksi_soal}
                     </p>
                   </button>
@@ -441,7 +441,7 @@ export function PortalSiswa({
                 <h2 className="mt-1 text-xl font-bold text-slate-900 [text-wrap:balance]">
                   {activeAssignment.judul}
                 </h2>
-                <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 whitespace-pre-wrap leading-relaxed">
+                <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm sm:text-base text-slate-800 whitespace-pre-line leading-relaxed">
                   {activeAssignment.instruksi_soal}
                 </div>
 
