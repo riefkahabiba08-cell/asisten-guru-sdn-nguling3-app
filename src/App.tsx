@@ -4,6 +4,7 @@ import { PortalSiswa } from './components/PortalSiswa';
 import { DashboardGuru } from './components/DashboardGuru';
 import { DatabaseSetupNotice } from './components/DatabaseSetupNotice';
 import { StudentManagerModal } from './components/StudentManagerModal';
+import { StudentLoginCardsModal } from './components/StudentLoginCardsModal';
 import {
   TEACHER_AUTH_STORAGE_KEY,
   TeacherAuthGate,
@@ -32,6 +33,8 @@ export default function App() {
   const [teacherAuthModalOpen, setTeacherAuthModalOpen] = useState(false);
   const [pendingStudentModalOpen, setPendingStudentModalOpen] = useState(false);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
+  const [printCardsOpen, setPrintCardsOpen] = useState(false);
+  const [printCardsStudents, setPrintCardsStudents] = useState<Student[]>([]);
   const [teacherRefreshTrigger, setTeacherRefreshTrigger] = useState(0);
 
   useEffect(() => {
@@ -80,6 +83,11 @@ export default function App() {
     setTeacherAuthModalOpen(true);
   };
 
+  const handleOpenPrintCards = (studentsList: Student[]) => {
+    setPrintCardsStudents(studentsList);
+    setPrintCardsOpen(true);
+  };
+
   const handleTeacherUnlockSuccess = () => {
     setTeacherUnlocked(true);
     setTeacherAuthModalOpen(false);
@@ -97,6 +105,7 @@ export default function App() {
     }
     setTeacherUnlocked(false);
     setStudentModalOpen(false);
+    setPrintCardsOpen(false);
     setPendingStudentModalOpen(false);
     setTeacherAuthModalOpen(false);
   };
@@ -106,74 +115,90 @@ export default function App() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
-      <TopBar
-        activeTab={activeTab}
-        onTabChange={handleTabChange}
-        loggedInStudent={loggedInStudent}
-        onStudentLogout={() => setLoggedInStudent(null)}
-        onOpenStudentManager={handleOpenStudentManager}
-      />
-
-      {health !== null && !hasValidSupabase && (
-        <DatabaseSetupNotice reason="env_missing" />
-      )}
-
-      {hasValidSupabase && tableMissingMessage && (
-        <DatabaseSetupNotice
-          reason="table_missing"
-          errorMessage={tableMissingMessage}
+    <>
+      <div
+        className={`min-h-screen flex flex-col bg-slate-50 text-slate-900 ${
+          printCardsOpen ? 'print:hidden' : ''
+        }`}
+      >
+        <TopBar
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+          loggedInStudent={loggedInStudent}
+          onStudentLogout={() => setLoggedInStudent(null)}
+          onOpenStudentManager={handleOpenStudentManager}
         />
-      )}
 
-      <div className="flex-1">
-        {activeTab === 'siswa' ? (
-          <PortalSiswa
-            student={loggedInStudent}
-            onLoginSuccess={(student) => setLoggedInStudent(student)}
-            onTableMissing={handleTableMissing}
+        {health !== null && !hasValidSupabase && (
+          <DatabaseSetupNotice reason="env_missing" />
+        )}
+
+        {hasValidSupabase && tableMissingMessage && (
+          <DatabaseSetupNotice
+            reason="table_missing"
+            errorMessage={tableMissingMessage}
           />
-        ) : teacherUnlocked ? (
-          <DashboardGuru
-            refreshTrigger={teacherRefreshTrigger}
-            onTableMissing={handleTableMissing}
-            onOpenStudentManager={handleOpenStudentManager}
-            onLockTeacher={handleLockTeacher}
-          />
-        ) : (
+        )}
+
+        <div className="flex-1">
+          {activeTab === 'siswa' ? (
+            <PortalSiswa
+              student={loggedInStudent}
+              onLoginSuccess={(student) => setLoggedInStudent(student)}
+              onTableMissing={handleTableMissing}
+            />
+          ) : teacherUnlocked ? (
+            <DashboardGuru
+              refreshTrigger={teacherRefreshTrigger}
+              onTableMissing={handleTableMissing}
+              onOpenStudentManager={handleOpenStudentManager}
+              onOpenPrintCards={handleOpenPrintCards}
+              onLockTeacher={handleLockTeacher}
+            />
+          ) : (
+            <TeacherAuthGate
+              onUnlockSuccess={handleTeacherUnlockSuccess}
+              onCancel={() => {
+                setPendingStudentModalOpen(false);
+                setActiveTab('siswa');
+              }}
+            />
+          )}
+        </div>
+
+        {teacherAuthModalOpen && !teacherUnlocked && (
           <TeacherAuthGate
+            isModal
             onUnlockSuccess={handleTeacherUnlockSuccess}
             onCancel={() => {
               setPendingStudentModalOpen(false);
-              setActiveTab('siswa');
+              setTeacherAuthModalOpen(false);
             }}
           />
         )}
+
+        <StudentManagerModal
+          isOpen={teacherUnlocked && studentModalOpen}
+          onClose={() => setStudentModalOpen(false)}
+          onStudentsChanged={() => setTeacherRefreshTrigger((n) => n + 1)}
+          onOpenPrintCards={handleOpenPrintCards}
+        />
+
+        <footer className="border-t border-slate-200 bg-white mt-12">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
+            <span>Asisten Guru SDN Nguling 3</span>
+            <span>Portal Evaluasi & Administrasi Kelas SD</span>
+          </div>
+        </footer>
       </div>
 
-      {teacherAuthModalOpen && !teacherUnlocked && (
-        <TeacherAuthGate
-          isModal
-          onUnlockSuccess={handleTeacherUnlockSuccess}
-          onCancel={() => {
-            setPendingStudentModalOpen(false);
-            setTeacherAuthModalOpen(false);
-          }}
+      {teacherUnlocked && printCardsOpen && (
+        <StudentLoginCardsModal
+          isOpen={printCardsOpen}
+          onClose={() => setPrintCardsOpen(false)}
+          initialStudents={printCardsStudents}
         />
       )}
-
-      <StudentManagerModal
-        isOpen={teacherUnlocked && studentModalOpen}
-        onClose={() => setStudentModalOpen(false)}
-        onStudentsChanged={() => setTeacherRefreshTrigger((n) => n + 1)}
-      />
-
-      <footer className="border-t border-slate-200 bg-white mt-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
-          <span>Asisten Guru SDN Nguling 3</span>
-          <span>Portal Evaluasi & Administrasi Kelas SD</span>
-        </div>
-      </footer>
-    </div>
+    </>
   );
 }

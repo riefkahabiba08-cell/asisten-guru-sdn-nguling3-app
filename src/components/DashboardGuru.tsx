@@ -8,6 +8,7 @@ import {
   Lock,
   PenLine,
   Plus,
+  Printer,
   RefreshCw,
   Search,
   Trash2,
@@ -32,6 +33,7 @@ interface DashboardGuruProps {
   refreshTrigger: number;
   onTableMissing: (message: string) => void;
   onOpenStudentManager: () => void;
+  onOpenPrintCards: (students: Student[]) => void;
   onLockTeacher: () => void;
 }
 
@@ -39,6 +41,7 @@ export function DashboardGuru({
   refreshTrigger,
   onTableMissing,
   onOpenStudentManager,
+  onOpenPrintCards,
   onLockTeacher,
 }: DashboardGuruProps) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -284,6 +287,14 @@ export function DashboardGuru({
           >
             <Users className="w-4 h-4" />
             <span>Kelola Data Siswa</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onOpenPrintCards(students)}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Cetak Kartu Login Siswa</span>
           </button>
           <button
             type="button"

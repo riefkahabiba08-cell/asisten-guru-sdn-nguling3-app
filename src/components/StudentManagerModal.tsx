@@ -17,6 +17,7 @@ import {
   FileSpreadsheet,
   Loader2,
   Pencil,
+  Printer,
   RefreshCw,
   Trash2,
   Upload,
@@ -38,6 +39,7 @@ interface StudentManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onStudentsChanged: () => void;
+  onOpenPrintCards: (students: Student[]) => void;
 }
 
 function parseBulkStudentsText(raw: string): {
@@ -119,6 +121,7 @@ export function StudentManagerModal({
   isOpen,
   onClose,
   onStudentsChanged,
+  onOpenPrintCards,
 }: StudentManagerModalProps) {
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(false);
@@ -968,19 +971,29 @@ export function StudentManagerModal({
                 </span>
               </div>
               {students.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    downloadPinCsv(
-                      students,
-                      'daftar-pin-siswa-sdn-nguling-3.csv',
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Unduh Daftar PIN Siswa (CSV)</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenPrintCards(students)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Cetak Kartu Login Siswa</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadPinCsv(
+                        students,
+                        'daftar-pin-siswa-sdn-nguling-3.csv',
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Unduh Daftar PIN Siswa (CSV)</span>
+                  </button>
+                </div>
               )}
             </div>
 
