@@ -670,6 +670,8 @@ async function startServer() {
       jumlah_soal,
       jenis_soal,
       perintah,
+      tingkatKesulitan,
+      instruksiKhusus,
     } = req.body ?? {};
 
     const cleanSubject = String(mata_pelajaran ?? '').trim();
@@ -677,6 +679,10 @@ async function startServer() {
     const cleanTopic = String(topik ?? perintah ?? '').trim();
     const count = Math.max(1, Math.min(25, Number(jumlah_soal) || 5));
     const questionType = String(jenis_soal ?? 'Uraian').trim();
+    const cleanDifficulty = String(
+      tingkatKesulitan ?? 'Sedang (Standar Kurikulum)',
+    ).trim();
+    const cleanCustomInstruction = String(instruksiKhusus ?? '').trim();
 
     if (!cleanTopic) {
       return res.status(400).json({
@@ -684,22 +690,38 @@ async function startServer() {
       });
     }
 
+    const difficultyGuide = cleanDifficulty.startsWith('Mudah')
+      ? 'Tingkat Mudah (Dasar / Pemahaman, C1–C2): Gunakan bahasa Indonesia yang sangat sederhana, kalimat pendek dan langsung, konsep dasar/remedial yang mudah dipahami siswa SD, serta rubrik penilaian yang menghargai pemahaman dasar.'
+      : cleanDifficulty.startsWith('Sulit')
+        ? 'Tingkat Sulit (HOTS / Penalaran, C4–C6): Rancang soal berbasis stimulus cerita singkat atau pemecahan masalah nyata yang melatih analisis, evaluasi, dan penalaran siswa SD, serta susun kunci rubrik yang merinci ketepatan langkah penalaran.'
+        : 'Tingkat Sedang (Standar Kurikulum, C2–C3): Sesuaikan dengan capaian pembelajaran standar Kurikulum Merdeka SD dengan kombinasi pemahaman dan penerapan sehari-hari, serta rubrik penilaian standar ketuntasan kelas.';
+
     const userPrompt = [
       `Mata Pelajaran: ${cleanSubject || 'Tematik SD'}`,
       `Tingkat Kelas: ${cleanGrade || 'Sekolah Dasar (SD)'}`,
       `Topik / Materi: ${cleanTopic}`,
       `Jumlah Soal: ${count} butir soal`,
       `Jenis Soal: ${questionType}`,
+      `Tingkat Kesulitan: ${cleanDifficulty}`,
+      ...(cleanCustomInstruction
+        ? [`Instruksi / Permintaan Khusus Guru: ${cleanCustomInstruction}`]
+        : []),
       '',
       'Tugas Anda:',
       `1. Buatlah tepat ${count} butir soal bertipe "${questionType}" yang sesuai dengan tingkat pemahaman siswa ${cleanGrade || 'SD'} tentang topik "${cleanTopic}".`,
-      '2. ATURAN FORMAT WAJIB (Baris Baru): Pada field instruksi_soal, setiap nomor soal (1., 2., 3., dst.) WAJIB dipisahkan dengan baris baru (\\n\\n) agar tidak menyatu dalam satu paragraf.',
+      `2. PENYESUAIAN TINGKAT KESULITAN & KOGNITIF: ${difficultyGuide}`,
+      ...(cleanCustomInstruction
+        ? [
+            `3. PERMINTAAN KHUSUS GURU (WAJIB DIIKUTI): ${cleanCustomInstruction}. Pastikan gaya bahasa, konteks soal, angka/cerita, serta kunci rubrik sepenuhnya mengikuti permintaan khusus ini.`,
+          ]
+        : []),
+      `${cleanCustomInstruction ? '4' : '3'}. ATURAN FORMAT WAJIB (Baris Baru): Pada field instruksi_soal, setiap nomor soal (1., 2., 3., dst.) WAJIB dipisahkan dengan baris baru (\\n\\n) agar tidak menyatu dalam satu paragraf.`,
       questionType === 'Pilihan Ganda'
-        ? '3. Untuk setiap soal Pilihan Ganda, tuliskan 4 opsi jawaban (A., B., C., D.) dan WAJIB letakkan setiap opsi pada baris baru terpisah (\\nA. ...\\nB. ...\\nC. ...\\nD. ...).'
+        ? `${cleanCustomInstruction ? '5' : '4'}. Untuk setiap soal Pilihan Ganda, tuliskan 4 opsi jawaban (A., B., C., D.) dan WAJIB letakkan setiap opsi pada baris baru terpisah (\\nA. ...\\nB. ...\\nC. ...\\nD. ...).`
         : questionType === 'Campuran'
-          ? '3. Kombinasikan soal Pilihan Ganda (dengan masing-masing opsi A., B., C., D. pada baris baru terpisah) dan soal Isian Singkat / Uraian secara proporsional hingga genap berjumlah sesuai jumlah soal.'
-          : '3. Tuliskan petunjuk pengerjaan di baris paling atas, lalu pisahkan setiap nomor soal (1., 2., 3., dst.) pada baris baru yang rapi.',
-      `4. Pada bagian kunci_rubrik, tuliskan kunci jawaban bernomor 1 sampai ${count} dengan setiap nomor berada pada baris baru (\\n), diikuti bagian Rubrik Penilaian (skala 0-100) pada paragraf baru yang rapi.`,
+          ? `${cleanCustomInstruction ? '5' : '4'}. Kombinasikan soal Pilihan Ganda (dengan masing-masing opsi A., B., C., D. pada baris baru terpisah) dan soal Isian Singkat / Uraian secara proporsional hingga genap berjumlah sesuai jumlah soal.`
+          : `${cleanCustomInstruction ? '5' : '4'}. Tuliskan petunjuk pengerjaan di baris paling atas, lalu pisahkan setiap nomor soal (1., 2., 3., dst.) pada baris baru yang rapi.`,
+      `${cleanCustomInstruction ? '6' : '5'}. Pada bagian kunci_rubrik, tuliskan kunci jawaban bernomor 1 sampai ${count} dengan setiap nomor berada pada baris baru (\\n), diikuti bagian Rubrik Penilaian (skala 0-100) yang disesuaikan dengan tingkat kesulitan "${cleanDifficulty}".`,
     ].join('\n');
 
     try {
@@ -708,7 +730,7 @@ async function startServer() {
         contents: userPrompt,
         config: {
           systemInstruction:
-            'Anda adalah asisten penyusun paket soal Sekolah Dasar (SD) di SDN Nguling 3 yang menguasai Kurikulum Merdeka. Susun paket soal multi-nomor yang jelas, bebas typo, edukatif untuk siswa SD. Selalu gunakan karakter baris baru (\\n) untuk memisahkan setiap nomor soal (1., 2., 3., dst.), setiap opsi pilihan ganda (A., B., C., D.), dan setiap nomor kunci jawaban agar tampilan selalu rapi dan terstruktur.',
+            'Anda adalah asisten penyusun paket soal Sekolah Dasar (SD) di SDN Nguling 3 yang menguasai Kurikulum Merdeka. Susun paket soal multi-nomor yang jelas, bebas typo, edukatif untuk siswa SD, serta akurat menyesuaikan tingkat kesulitan (Mudah/Sedang/Sulit HOTS) dan instruksi khusus guru. Selalu gunakan karakter baris baru (\\n) untuk memisahkan setiap nomor soal (1., 2., 3., dst.), setiap opsi pilihan ganda (A., B., C., D.), dan setiap nomor kunci jawaban agar tampilan selalu rapi dan terstruktur.',
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -726,7 +748,7 @@ async function startServer() {
               kunci_rubrik: {
                 type: Type.STRING,
                 description:
-                  'Kunci jawaban lengkap bernomor 1 sampai N pada baris terpisah (\\n) beserta rubrik pembobotan nilai total 0-100.',
+                  'Kunci jawaban lengkap bernomor 1 sampai N pada baris terpisah (\\n) beserta rubrik pembobotan nilai total 0-100 yang selaras dengan tingkat kesulitan soal.',
               },
             },
             required: ['judul', 'instruksi_soal', 'kunci_rubrik'],

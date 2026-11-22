@@ -21,12 +21,19 @@ export interface Assignment {
   created_at?: string;
 }
 
+export type DifficultyLevel =
+  | 'Mudah (Dasar / Pemahaman)'
+  | 'Sedang (Standar Kurikulum)'
+  | 'Sulit (HOTS / Penalaran)';
+
 export interface GenerateAssignmentParams {
   mata_pelajaran: string;
   kelas: string;
   topik: string;
   jumlah_soal: number;
   jenis_soal: 'Pilihan Ganda' | 'Isian Singkat' | 'Uraian' | 'Campuran';
+  tingkatKesulitan?: DifficultyLevel;
+  instruksiKhusus?: string;
 }
 
 export interface Submission {

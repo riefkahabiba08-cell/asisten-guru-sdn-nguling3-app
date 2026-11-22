@@ -22,6 +22,7 @@ import {
 } from '../lib/dataService';
 import type {
   Assignment,
+  DifficultyLevel,
   GenerateAssignmentParams,
   Student,
   SubmissionWithDetails,
@@ -53,6 +54,10 @@ export function DashboardGuru({
   const [jumlahSoal, setJumlahSoal] = useState(5);
   const [jenisSoal, setJenisSoal] =
     useState<GenerateAssignmentParams['jenis_soal']>('Pilihan Ganda');
+  const [tingkatKesulitan, setTingkatKesulitan] = useState<DifficultyLevel>(
+    'Sedang (Standar Kurikulum)',
+  );
+  const [instruksiKhusus, setInstruksiKhusus] = useState('');
   const [generatingAi, setGeneratingAi] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiSuccess, setAiSuccess] = useState<string | null>(null);
@@ -125,6 +130,8 @@ export function DashboardGuru({
         topik: topikMateri.trim(),
         jumlah_soal: jumlahSoal,
         jenis_soal: jenisSoal,
+        tingkatKesulitan,
+        instruksiKhusus: instruksiKhusus.trim() || undefined,
       });
 
       if (!res.ok || !res.data) {
@@ -140,7 +147,7 @@ export function DashboardGuru({
       setInstruksiSoal(generated.instruksi_soal);
       setKunciRubrik(generated.kunci_rubrik);
       setAiSuccess(
-        `Paket ${jumlahSoal} soal (${jenisSoal}) beserta kunci jawaban dan rubrik berhasil dibuat. Silakan tinjau atau langsung klik Simpan Tugas Baru.`,
+        `Paket ${jumlahSoal} soal (${jenisSoal} · ${tingkatKesulitan}) beserta kunci jawaban dan rubrik berhasil dibuat. Silakan tinjau atau langsung klik Simpan Tugas Baru.`,
       );
     } finally {
       setGeneratingAi(false);
@@ -173,6 +180,7 @@ export function DashboardGuru({
       setInstruksiSoal('');
       setKunciRubrik('');
       setTopikMateri('');
+      setInstruksiKhusus('');
       setAiSuccess(null);
       setFormSuccess(`Tugas "${createdTitle}" berhasil disimpan ke Supabase.`);
       await fetchAllTeacherData();
@@ -488,6 +496,53 @@ export function DashboardGuru({
                   <option value="Campuran">Campuran</option>
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="ai-difficulty"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Tingkat Kesulitan
+              </label>
+              <select
+                id="ai-difficulty"
+                value={tingkatKesulitan}
+                onChange={(e) =>
+                  setTingkatKesulitan(e.target.value as DifficultyLevel)
+                }
+                disabled={generatingAi}
+                className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 min-h-[40px]"
+              >
+                <option value="Mudah (Dasar / Pemahaman)">
+                  Mudah (Dasar / Pemahaman)
+                </option>
+                <option value="Sedang (Standar Kurikulum)">
+                  Sedang (Standar Kurikulum)
+                </option>
+                <option value="Sulit (HOTS / Penalaran)">
+                  Sulit (HOTS / Penalaran)
+                </option>
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="ai-custom-instruction"
+                className="block text-xs font-medium text-slate-700 mb-1"
+              >
+                Instruksi / Permintaan Khusus Guru{' '}
+                <span className="font-normal text-slate-500">(Opsional)</span>
+              </label>
+              <textarea
+                id="ai-custom-instruction"
+                rows={2}
+                disabled={generatingAi}
+                placeholder="Contoh: Buat soal bergambar cerita pendek, gunakan angka di bawah 100, atau buat soal lebih mudah untuk remedial"
+                value={instruksiKhusus}
+                onChange={(e) => setInstruksiKhusus(e.target.value)}
+                className="w-full p-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-700 focus:border-teal-700 leading-relaxed"
+              />
             </div>
 
             {aiError && (
