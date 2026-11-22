@@ -162,7 +162,7 @@ function mapSupabaseError(error: { code?: string; message?: string }) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const supabaseReady = Boolean(getSupabaseServerClient());
@@ -481,6 +481,128 @@ async function startServer() {
     }
 
     return res.json({ deleted: true });
+  });
+
+  app.post('/api/students/extract', async (req: Request, res: Response) => {
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error:
+          'GEMINI_API_KEY belum tersedia di lingkungan server. Silakan atur di panel Secrets.',
+        code: 'GEMINI_NOT_CONFIGURED',
+      });
+    }
+
+    const { fileName, extractedText, inlineDataParts } = req.body ?? {};
+    const hasText = typeof extractedText === 'string' && extractedText.trim().length > 0;
+    const hasInline = Array.isArray(inlineDataParts) && inlineDataParts.length > 0;
+
+    if (!hasText && !hasInline) {
+      return res.status(400).json({
+        error: 'Data file atau gambar tidak boleh kosong.',
+      });
+    }
+
+    const parts: Array<
+      | { text: string }
+      | { inlineData: { mimeType: string; data: string } }
+    > = [];
+
+    if (hasInline) {
+      for (const p of inlineDataParts) {
+        if (p?.mimeType && p?.data) {
+          parts.push({
+            inlineData: {
+              mimeType: String(p.mimeType),
+              data: String(p.data),
+            },
+          });
+        }
+      }
+    }
+
+    parts.push({
+      text: [
+        `Nama File: ${String(fileName || 'daftar_siswa')}`,
+        hasText
+          ? `Isi Data Teks/Spreadsheet:\n${String(extractedText).trim()}`
+          : 'Bacalah gambar atau dokumen PDF terlampir secara menyeluruh.',
+        '',
+        'Instruksi Ekstraksi:',
+        '1. Ekstrak seluruh siswa yang ada pada dokumen/tabel ke dalam array JSON `students`.',
+        '2. Untuk setiap siswa, ambil `no_absen` (nomor urut/absen, pertahankan format seperti "01" atau "1" sesuai dokumen, atau isi nomor urut jika tidak tertulis), `nama_lengkap` (nama lengkap siswa dengan ejaan kapital yang rapi), `kelas` (nama kelas jika tercantum pada kolom atau judul dokumen, misalnya "Kelas 5A", atau string kosong "" jika tidak ada), dan `pin` (ambil jika sudah ada kolom PIN, atau string kosong "" jika belum ada kolom PIN).',
+        '3. Jangan sertakan baris header judul tabel sebagai siswa.',
+      ].join('\n'),
+    });
+
+    try {
+      const response = await generateContentWithRetry(ai, {
+        model: 'gemini-4-hydrogen',
+        contents: [{ role: 'user', parts }],
+        config: {
+          systemInstruction:
+            'Anda adalah asisten administrasi sekolah dasar (SDN Nguling 3) yang sangat teliti mengekstrak daftar absen siswa dari dokumen, spreadsheet, PDF, maupun foto/gambar daftar hadir. Kembalikan daftar seluruh siswa dalam format JSON terstruktur sesuai skema.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              students: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    no_absen: {
+                      type: Type.STRING,
+                      description: 'Nomor absen atau nomor urut siswa.',
+                    },
+                    nama_lengkap: {
+                      type: Type.STRING,
+                      description: 'Nama lengkap siswa.',
+                    },
+                    kelas: {
+                      type: Type.STRING,
+                      description: 'Nama kelas siswa jika ada, atau string kosong.',
+                    },
+                    pin: {
+                      type: Type.STRING,
+                      description:
+                        'PIN 4 digit siswa jika ada di dokumen, atau string kosong jika belum ada.',
+                    },
+                  },
+                  required: ['no_absen', 'nama_lengkap'],
+                },
+              },
+            },
+            required: ['students'],
+          },
+        },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        return res.status(502).json({
+          error: 'Gemini AI tidak mengembalikan daftar siswa dari file tersebut.',
+        });
+      }
+
+      const parsed = JSON.parse(rawText) as {
+        students?: Array<{
+          no_absen?: string | number;
+          nama_lengkap?: string;
+          kelas?: string;
+          pin?: string | number;
+        }>;
+      };
+
+      return res.json({ students: parsed.students || [] });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Gagal mengekstrak daftar siswa.';
+      console.error('Gemini student extraction error:', message);
+      return res.status(502).json({
+        error: `Ekstraksi data siswa dengan AI gagal: ${message}`,
+      });
+    }
   });
 
   app.get('/api/assignments', async (req: Request, res: Response) => {

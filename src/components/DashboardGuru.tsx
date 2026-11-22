@@ -5,6 +5,7 @@ import {
   Download,
   Eye,
   Loader2,
+  Lock,
   PenLine,
   Plus,
   RefreshCw,
@@ -30,12 +31,14 @@ interface DashboardGuruProps {
   refreshTrigger: number;
   onTableMissing: (message: string) => void;
   onOpenStudentManager: () => void;
+  onLockTeacher: () => void;
 }
 
 export function DashboardGuru({
   refreshTrigger,
   onTableMissing,
   onOpenStudentManager,
+  onLockTeacher,
 }: DashboardGuruProps) {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionWithDetails[]>([]);
@@ -282,6 +285,14 @@ export function DashboardGuru({
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             <span>Muat Ulang Data</span>
+          </button>
+          <button
+            type="button"
+            onClick={onLockTeacher}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 border border-slate-200 hover:bg-slate-200 hover:text-slate-900 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+          >
+            <Lock className="w-4 h-4" />
+            <span>Kunci / Keluar Guru</span>
           </button>
         </div>
       </div>

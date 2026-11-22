@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import { fetchApiJson } from './api';
 import { getSupabaseClient } from './supabase';
 import type {
@@ -76,6 +77,7 @@ async function callGeminiRestClient<T>(params: {
   systemInstruction: string;
   userPrompt: string;
   responseSchema: Record<string, unknown>;
+  inlineDataParts?: Array<{ mimeType: string; data: string }>;
 }): Promise<DataResult<T>> {
   const apiKey = getClientGeminiApiKey();
   if (!apiKey) {
@@ -94,6 +96,21 @@ async function callGeminiRestClient<T>(params: {
   ];
   let lastErrorMessage = 'Gagal menghubungi Gemini API.';
 
+  const userParts: Array<
+    { text: string } | { inlineData: { mimeType: string; data: string } }
+  > = [{ text: params.userPrompt }];
+
+  if (params.inlineDataParts && params.inlineDataParts.length > 0) {
+    for (const part of params.inlineDataParts) {
+      userParts.push({
+        inlineData: {
+          mimeType: part.mimeType,
+          data: part.data,
+        },
+      });
+    }
+  }
+
   for (const modelName of candidateModels) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
@@ -109,7 +126,7 @@ async function callGeminiRestClient<T>(params: {
             contents: [
               {
                 role: 'user',
-                parts: [{ text: params.userPrompt }],
+                parts: userParts,
               },
             ],
             generationConfig: {
@@ -1044,3 +1061,277 @@ export async function fetchStudentWorkspaceData(
     code: assignRes.errorCode,
   };
 }
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+export function generateUniqueFourDigitPin(usedPins: Set<string>): string {
+  for (let i = 0; i < 500; i++) {
+    const candidate = String(Math.floor(1000 + Math.random() * 9000));
+    if (!usedPins.has(candidate)) {
+      usedPins.add(candidate);
+      return candidate;
+    }
+  }
+  // Fallback deterministik jika hampir penuh
+  for (let n = 1000; n <= 9999; n++) {
+    const candidate = String(n);
+    if (!usedPins.has(candidate)) {
+      usedPins.add(candidate);
+      return candidate;
+    }
+  }
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function normalizeExtractedStudents(
+  rawList: Array<{
+    no_absen?: string | number;
+    nama_lengkap?: string;
+    kelas?: string;
+    pin?: string | number;
+  }>,
+  existingPins: Set<string> = new Set(),
+): StudentInput[] {
+  const usedPins = new Set<string>(existingPins);
+  const preliminary = rawList
+    .map((item, idx) => {
+      const noAbsen = String(item.no_absen ?? idx + 1).trim();
+      const nama = String(item.nama_lengkap ?? '').trim();
+      const kelas = String(item.kelas ?? '').trim();
+      const rawPin = String(item.pin ?? '').trim();
+      if (!nama) return null;
+      if (rawPin && /^\d{4,8}$/.test(rawPin)) {
+        usedPins.add(rawPin);
+      }
+      return {
+        no_absen: noAbsen || String(idx + 1).padStart(2, '0'),
+        nama_lengkap: nama,
+        kelas,
+        rawPin: rawPin && /^\d{4,8}$/.test(rawPin) ? rawPin : '',
+      };
+    })
+    .filter(Boolean) as Array<{
+    no_absen: string;
+    nama_lengkap: string;
+    kelas: string;
+    rawPin: string;
+  }>;
+
+  return preliminary.map((item) => ({
+    no_absen: item.no_absen,
+    nama_lengkap: item.nama_lengkap,
+    kelas: item.kelas || undefined,
+    pin: item.rawPin || generateUniqueFourDigitPin(usedPins),
+  }));
+}
+
+export async function extractStudentsFromFileData(
+  file: File,
+  existingPins: Set<string> = new Set(),
+): Promise<DataResult<StudentInput[]>> {
+  const fileName = file.name.toLowerCase();
+  const mimeType = file.type || '';
+
+  const isExcel =
+    fileName.endsWith('.xlsx') ||
+    fileName.endsWith('.xls') ||
+    mimeType.includes('spreadsheetml') ||
+    mimeType.includes('ms-excel');
+  const isCsvOrText =
+    fileName.endsWith('.csv') ||
+    fileName.endsWith('.txt') ||
+    mimeType === 'text/csv' ||
+    mimeType === 'text/plain';
+  const isPdf = fileName.endsWith('.pdf') || mimeType === 'application/pdf';
+  const isImage =
+    mimeType.startsWith('image/') ||
+    /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(fileName);
+
+  if (!isExcel && !isCsvOrText && !isPdf && !isImage) {
+    return {
+      ok: false,
+      error:
+        'Format file belum didukung. Gunakan file CSV, Excel (.xlsx/.xls), PDF, atau gambar/foto (.jpg/.png).',
+    };
+  }
+
+  let extractedText = '';
+  let inlineDataParts: Array<{ mimeType: string; data: string }> | undefined;
+
+  try {
+    if (isExcel) {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const sheetTexts = workbook.SheetNames.map((name) => {
+        const sheet = workbook.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(sheet);
+        return `--- Sheet: ${name} ---\n${csv}`;
+      });
+      extractedText = sheetTexts.join('\n\n').trim();
+      if (!extractedText) {
+        return {
+          ok: false,
+          error: 'File Excel tampak kosong atau tidak memiliki data tabel.',
+        };
+      }
+    } else if (isCsvOrText) {
+      extractedText = (await file.text()).trim();
+      if (!extractedText) {
+        return {
+          ok: false,
+          error: 'File CSV/teks tampak kosong.',
+        };
+      }
+    } else {
+      const buffer = await file.arrayBuffer();
+      const base64Data = arrayBufferToBase64(buffer);
+      const resolvedMime = isPdf
+        ? 'application/pdf'
+        : mimeType || (fileName.endsWith('.png') ? 'image/png' : 'image/jpeg');
+      inlineDataParts = [{ mimeType: resolvedMime, data: base64Data }];
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Gagal membaca isi file.';
+    return {
+      ok: false,
+      error: `Gagal memproses file "${file.name}": ${msg}`,
+    };
+  }
+
+  const systemInstruction =
+    'Anda adalah asisten administrasi sekolah dasar (SDN Nguling 3) yang sangat teliti mengekstrak daftar absen siswa dari dokumen, spreadsheet, PDF, maupun foto/gambar daftar hadir. Kembalikan daftar seluruh siswa dalam format JSON terstruktur sesuai skema.';
+
+  const userPrompt = [
+    `Nama File: ${file.name}`,
+    extractedText
+      ? `Isi Data Teks/Spreadsheet:\n${extractedText}`
+      : 'Bacalah gambar atau dokumen PDF terlampir secara menyeluruh.',
+    '',
+    'Instruksi Ekstraksi:',
+    '1. Ekstrak seluruh siswa yang ada pada dokumen/tabel ke dalam array JSON `students`.',
+    '2. Untuk setiap siswa, ambil `no_absen` (nomor urut/absen, pertahankan format seperti "01" atau "1" sesuai dokumen, atau isi nomor urut jika tidak tertulis), `nama_lengkap` (nama lengkap siswa dengan ejaan kapital yang rapi), `kelas` (nama kelas jika tercantum pada kolom atau judul dokumen, misalnya "Kelas 5A", atau string kosong "" jika tidak ada), dan `pin` (ambil jika sudah ada kolom PIN, atau string kosong "" jika belum ada kolom PIN).',
+    '3. Jangan sertakan baris header judul tabel sebagai siswa.',
+  ].join('\n');
+
+  const responseSchema = {
+    type: 'OBJECT',
+    properties: {
+      students: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            no_absen: {
+              type: 'STRING',
+              description: 'Nomor absen atau nomor urut siswa.',
+            },
+            nama_lengkap: {
+              type: 'STRING',
+              description: 'Nama lengkap siswa.',
+            },
+            kelas: {
+              type: 'STRING',
+              description: 'Nama kelas siswa jika ada, atau string kosong.',
+            },
+            pin: {
+              type: 'STRING',
+              description:
+                'PIN 4 digit siswa jika ada di dokumen, atau string kosong jika belum ada.',
+            },
+          },
+          required: ['no_absen', 'nama_lengkap'],
+        },
+      },
+    },
+    required: ['students'],
+  };
+
+  const clientKey = getClientGeminiApiKey();
+  if (clientKey) {
+    const aiRes = await callGeminiRestClient<{
+      students?: Array<{
+        no_absen?: string | number;
+        nama_lengkap?: string;
+        kelas?: string;
+        pin?: string | number;
+      }>;
+    }>({
+      systemInstruction,
+      userPrompt,
+      responseSchema,
+      inlineDataParts,
+    });
+
+    if (!aiRes.ok || !aiRes.data) {
+      return {
+        ok: false,
+        error: aiRes.error || 'Gagal mengekstrak data siswa dengan AI.',
+        code: aiRes.code,
+      };
+    }
+
+    const normalized = normalizeExtractedStudents(
+      aiRes.data.students || [],
+      existingPins,
+    );
+    if (normalized.length === 0) {
+      return {
+        ok: false,
+        error:
+          'AI tidak menemukan baris nama siswa pada file tersebut. Pastikan isi file terbaca jelas.',
+      };
+    }
+
+    return { ok: true, data: normalized };
+  }
+
+  // Fallback ke server lokal jika GEMINI_API_KEY hanya tersedia di runtime server
+  const apiRes = await fetchApiJson<{
+    students: Array<{
+      no_absen?: string | number;
+      nama_lengkap?: string;
+      kelas?: string;
+      pin?: string | number;
+    }>;
+  }>('/api/students/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: file.name,
+      extractedText,
+      inlineDataParts,
+    }),
+  });
+
+  if (apiRes.ok && apiRes.data?.students) {
+    const normalized = normalizeExtractedStudents(
+      apiRes.data.students,
+      existingPins,
+    );
+    if (normalized.length === 0) {
+      return {
+        ok: false,
+        error: 'AI tidak menemukan data siswa pada file tersebut.',
+      };
+    }
+    return { ok: true, data: normalized };
+  }
+
+  return {
+    ok: false,
+    error:
+      apiRes.errorMessage ||
+      'GEMINI_API_KEY belum tersedia untuk memproses file dengan AI.',
+    code: apiRes.errorCode,
+  };
+}
+

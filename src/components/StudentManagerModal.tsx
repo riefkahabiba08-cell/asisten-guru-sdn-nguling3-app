@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type FormEvent,
+} from 'react';
 import {
   AlertCircle,
   Check,
   CheckCircle2,
+  Download,
+  FileSpreadsheet,
   Loader2,
   Pencil,
+  RefreshCw,
   Trash2,
   Upload,
   UserPlus,
@@ -14,7 +26,9 @@ import {
   bulkImportStudentsData,
   createStudentData,
   deleteStudentData,
+  extractStudentsFromFileData,
   fetchStudentsData,
+  generateUniqueFourDigitPin,
   updateStudentData,
 } from '../lib/dataService';
 import type { Student, StudentInput } from '../types';
@@ -85,7 +99,7 @@ export function StudentManagerModal({
   const [error, setError] = useState<string | null>(null);
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<'single' | 'bulk'>('single');
+  const [mode, setMode] = useState<'single' | 'bulk' | 'file'>('single');
 
   // Tambah siswa satuan
   const [noAbsen, setNoAbsen] = useState('');
@@ -97,6 +111,14 @@ export function StudentManagerModal({
   // Impor massal CSV/teks
   const [bulkText, setBulkText] = useState('');
   const [importing, setImporting] = useState(false);
+
+  // Upload File Data Siswa Otomatis (AI)
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [extractingFile, setExtractingFile] = useState(false);
+  const [previewStudents, setPreviewStudents] = useState<StudentInput[]>([]);
+  const [savingPreview, setSavingPreview] = useState(false);
 
   // Edit & hapus siswa
   const [editingId, setEditingId] = useState<string | number | null>(null);
@@ -262,6 +284,150 @@ export function StudentManagerModal({
     }
   };
 
+  const processSelectedFile = async (file: File) => {
+    setError(null);
+    setFormFeedback(null);
+    setSelectedFileName(file.name);
+    setExtractingFile(true);
+
+    try {
+      const existingPins = new Set(
+        students.map((s) => String(s.pin ?? '').trim()).filter(Boolean),
+      );
+      const res = await extractStudentsFromFileData(file, existingPins);
+      if (!res.ok || !res.data) {
+        setError(res.error || 'Gagal membaca daftar siswa dari file.');
+        return;
+      }
+
+      setPreviewStudents(res.data);
+      setFormFeedback(
+        `Berhasil membaca ${res.data.length} siswa dari "${file.name}". Periksa atau ubah data di tabel pratinjau sebelum menyimpan ke database.`,
+      );
+    } finally {
+      setExtractingFile(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      void processSelectedFile(file);
+    }
+  };
+
+  const handleFileDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      void processSelectedFile(file);
+    }
+  };
+
+  const handlePreviewFieldChange = (
+    index: number,
+    field: keyof StudentInput,
+    value: string,
+  ) => {
+    setPreviewStudents((prev) =>
+      prev.map((row, idx) =>
+        idx === index ? { ...row, [field]: value } : row,
+      ),
+    );
+  };
+
+  const handleRegeneratePreviewPin = (index: number) => {
+    const usedPins = new Set<string>([
+      ...students.map((s) => String(s.pin ?? '').trim()).filter(Boolean),
+      ...previewStudents.map((s) => String(s.pin ?? '').trim()).filter(Boolean),
+    ]);
+    const newPin = generateUniqueFourDigitPin(usedPins);
+    handlePreviewFieldChange(index, 'pin', newPin);
+  };
+
+  const handleRemovePreviewRow = (index: number) => {
+    setPreviewStudents((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleSavePreviewToDatabase = async () => {
+    setError(null);
+    setFormFeedback(null);
+
+    const cleaned = previewStudents
+      .map((s) => ({
+        no_absen: s.no_absen.trim(),
+        nama_lengkap: s.nama_lengkap.trim(),
+        pin: s.pin.trim(),
+        kelas: s.kelas?.trim() || undefined,
+      }))
+      .filter((s) => s.no_absen && s.nama_lengkap && s.pin);
+
+    if (cleaned.length === 0) {
+      setError(
+        'Daftar pratinjau kosong atau belum lengkap. Pastikan No. Absen, Nama Lengkap, dan PIN terisi.',
+      );
+      return;
+    }
+
+    setSavingPreview(true);
+    try {
+      const res = await bulkImportStudentsData(cleaned);
+      if (!res.ok) {
+        setError(res.error || 'Gagal menyimpan daftar siswa ke database.');
+        return;
+      }
+
+      setFormFeedback(
+        `Berhasil menyimpan ${res.data?.length ?? cleaned.length} siswa ke tabel students Supabase. Anda juga dapat mengunduh daftar PIN siswa (CSV).`,
+      );
+      await loadStudents();
+      onStudentsChanged();
+    } finally {
+      setSavingPreview(false);
+    }
+  };
+
+  const downloadPinCsv = (
+    rows: Array<{
+      no_absen: string | number;
+      nama_lengkap: string;
+      kelas?: string | null;
+      pin?: string;
+    }>,
+    filename: string,
+  ) => {
+    if (rows.length === 0) return;
+    const headers = ['No Absen', 'Nama Lengkap', 'Kelas', 'PIN Login'];
+    const escapeCsv = (val: string | number | null | undefined) => {
+      const s = String(val ?? '').replace(/"/g, '""');
+      return `"${s}"`;
+    };
+    const csvLines = [
+      headers.join(','),
+      ...rows.map((r) =>
+        [
+          escapeCsv(r.no_absen),
+          escapeCsv(r.nama_lengkap),
+          escapeCsv(r.kelas || ''),
+          escapeCsv(r.pin || ''),
+        ].join(','),
+      ),
+    ];
+    const blob = new Blob([csvLines.join('\n')], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div
       role="dialog"
@@ -295,7 +461,7 @@ export function StudentManagerModal({
 
         <div className="p-6 overflow-y-auto space-y-6">
           <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+            <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
               <button
                 type="button"
                 onClick={() => {
@@ -323,6 +489,20 @@ export function StudentManagerModal({
                 }`}
               >
                 Impor Massal (Teks / CSV)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('file');
+                  setError(null);
+                }}
+                className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  mode === 'file'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Upload File Otomatis (AI)
               </button>
             </div>
           </div>
@@ -419,7 +599,7 @@ export function StudentManagerModal({
                 </button>
               </div>
             </form>
-          ) : (
+          ) : mode === 'bulk' ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <label
@@ -468,6 +648,229 @@ export function StudentManagerModal({
                 </button>
               </div>
             </div>
+          ) : (
+            <div className="space-y-4">
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingFile(true);
+                }}
+                onDragLeave={() => setIsDraggingFile(false)}
+                onDrop={handleFileDrop}
+                className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors ${
+                  isDraggingFile
+                    ? 'border-teal-600 bg-teal-50/70'
+                    : 'border-slate-300 bg-slate-50/70 hover:border-teal-500'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  id="student-ai-file-input"
+                  type="file"
+                  accept=".csv,.xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                  onChange={handleFileInputChange}
+                  className="sr-only"
+                />
+
+                <div className="mx-auto w-11 h-11 rounded-lg bg-white border border-slate-200 flex items-center justify-center mb-3">
+                  {extractingFile ? (
+                    <Loader2 className="w-5 h-5 text-teal-700 animate-spin" />
+                  ) : (
+                    <FileSpreadsheet className="w-5 h-5 text-teal-700" />
+                  )}
+                </div>
+
+                <h3 className="text-sm font-semibold text-slate-900">
+                  {extractingFile
+                    ? `Membaca "${selectedFileName}" dengan Gemini AI...`
+                    : 'Unggah Daftar Absen Siswa (CSV, Excel, PDF, atau Foto)'}
+                </h3>
+                <p className="mt-1 text-xs text-slate-600 max-w-lg mx-auto leading-relaxed">
+                  Gemini AI akan mengekstrak No. Absen, Nama Lengkap, serta
+                  Kelas, lalu otomatis membuatkan PIN login 4 digit unik untuk
+                  setiap siswa jika file belum memiliki kolom PIN.
+                </p>
+
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                  <label
+                    htmlFor="student-ai-file-input"
+                    className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-lg transition-colors min-h-[40px] cursor-pointer ${
+                      extractingFile ? 'opacity-60 pointer-events-none' : ''
+                    }`}
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Pilih File dari Perangkat</span>
+                  </label>
+                  {selectedFileName && !extractingFile && (
+                    <span className="text-xs font-mono text-slate-600">
+                      File terakhir: {selectedFileName}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {previewStudents.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-900">
+                        Pratinjau Hasil Ekstraksi AI ({previewStudents.length}{' '}
+                        siswa)
+                      </h4>
+                      <p className="text-xs text-slate-600">
+                        Guru dapat mengedit langsung kolom di bawah sebelum
+                        menyimpan ke database Supabase.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadPinCsv(
+                            previewStudents,
+                            'daftar-pin-siswa-sdn-nguling-3.csv',
+                          )
+                        }
+                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap min-h-[38px]"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Unduh Daftar PIN Siswa (CSV)</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingPreview}
+                        onClick={handleSavePreviewToDatabase}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap min-h-[38px]"
+                      >
+                        {savingPreview ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Menyimpan...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>Simpan Semua ke Database</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-72 overflow-y-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                        <tr>
+                          <th className="py-2 px-3 text-xs font-semibold text-slate-600 whitespace-nowrap">
+                            No. Absen
+                          </th>
+                          <th className="py-2 px-3 text-xs font-semibold text-slate-600">
+                            Nama Lengkap
+                          </th>
+                          <th className="py-2 px-3 text-xs font-semibold text-slate-600 whitespace-nowrap">
+                            Kelas
+                          </th>
+                          <th className="py-2 px-3 text-xs font-semibold text-slate-600 whitespace-nowrap">
+                            PIN Login (4 Digit)
+                          </th>
+                          <th className="py-2 px-3 text-xs font-semibold text-slate-600 text-right whitespace-nowrap">
+                            Hapus
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 text-xs bg-white">
+                        {previewStudents.map((row, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50">
+                            <td className="py-1.5 px-2.5">
+                              <input
+                                type="text"
+                                aria-label={`Pratinjau No Absen baris ${idx + 1}`}
+                                value={row.no_absen}
+                                onChange={(e) =>
+                                  handlePreviewFieldChange(
+                                    idx,
+                                    'no_absen',
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-16 px-2 py-1 font-mono tabular-nums bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-teal-700"
+                              />
+                            </td>
+                            <td className="py-1.5 px-2.5">
+                              <input
+                                type="text"
+                                aria-label={`Pratinjau Nama Lengkap baris ${idx + 1}`}
+                                value={row.nama_lengkap}
+                                onChange={(e) =>
+                                  handlePreviewFieldChange(
+                                    idx,
+                                    'nama_lengkap',
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-full min-w-[160px] px-2 py-1 bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-teal-700"
+                              />
+                            </td>
+                            <td className="py-1.5 px-2.5">
+                              <input
+                                type="text"
+                                aria-label={`Pratinjau Kelas baris ${idx + 1}`}
+                                placeholder="Kelas 5A"
+                                value={row.kelas || ''}
+                                onChange={(e) =>
+                                  handlePreviewFieldChange(
+                                    idx,
+                                    'kelas',
+                                    e.target.value,
+                                  )
+                                }
+                                className="w-24 px-2 py-1 bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-teal-700"
+                              />
+                            </td>
+                            <td className="py-1.5 px-2.5">
+                              <div className="inline-flex items-center gap-1">
+                                <input
+                                  type="text"
+                                  aria-label={`Pratinjau PIN baris ${idx + 1}`}
+                                  value={row.pin}
+                                  onChange={(e) =>
+                                    handlePreviewFieldChange(
+                                      idx,
+                                      'pin',
+                                      e.target.value,
+                                    )
+                                  }
+                                  className="w-20 px-2 py-1 font-mono tabular-nums bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-teal-700"
+                                />
+                                <button
+                                  type="button"
+                                  title="Buat ulang PIN 4 digit unik"
+                                  aria-label={`Acak ulang PIN baris ${idx + 1}`}
+                                  onClick={() => handleRegeneratePreviewPin(idx)}
+                                  className="p-1 text-slate-500 hover:text-teal-700 hover:bg-teal-50 rounded"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-2.5 text-right">
+                              <button
+                                type="button"
+                                aria-label={`Hapus baris pratinjau ${idx + 1}`}
+                                onClick={() => handleRemovePreviewRow(idx)}
+                                className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {error && (
@@ -491,13 +894,30 @@ export function StudentManagerModal({
           )}
 
           <div className="border-t border-slate-200 pt-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Daftar Siswa Terdaftar
-              </h3>
-              <span className="text-xs font-mono tabular-nums text-slate-500">
-                {students.length} siswa
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Daftar Siswa Terdaftar
+                </h3>
+                <span className="text-xs font-mono tabular-nums text-slate-500">
+                  {students.length} siswa
+                </span>
+              </div>
+              {students.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadPinCsv(
+                      students,
+                      'daftar-pin-siswa-sdn-nguling-3.csv',
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Unduh Daftar PIN Siswa (CSV)</span>
+                </button>
+              )}
             </div>
 
             {loading ? (

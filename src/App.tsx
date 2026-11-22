@@ -4,8 +4,20 @@ import { PortalSiswa } from './components/PortalSiswa';
 import { DashboardGuru } from './components/DashboardGuru';
 import { DatabaseSetupNotice } from './components/DatabaseSetupNotice';
 import { StudentManagerModal } from './components/StudentManagerModal';
+import {
+  TEACHER_AUTH_STORAGE_KEY,
+  TeacherAuthGate,
+} from './components/TeacherAuthGate';
 import { isClientSupabaseConfigured } from './lib/supabase';
 import type { ActiveTab, HealthStatus, Student } from './types';
+
+function readInitialTeacherUnlocked(): boolean {
+  try {
+    return sessionStorage.getItem(TEACHER_AUTH_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('siswa');
@@ -14,6 +26,11 @@ export default function App() {
   const [tableMissingMessage, setTableMissingMessage] = useState<string | null>(
     null,
   );
+  const [teacherUnlocked, setTeacherUnlocked] = useState<boolean>(
+    readInitialTeacherUnlocked,
+  );
+  const [teacherAuthModalOpen, setTeacherAuthModalOpen] = useState(false);
+  const [pendingStudentModalOpen, setPendingStudentModalOpen] = useState(false);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
   const [teacherRefreshTrigger, setTeacherRefreshTrigger] = useState(0);
 
@@ -54,6 +71,36 @@ export default function App() {
     setTableMissingMessage(null);
   };
 
+  const handleOpenStudentManager = () => {
+    if (teacherUnlocked) {
+      setStudentModalOpen(true);
+      return;
+    }
+    setPendingStudentModalOpen(true);
+    setTeacherAuthModalOpen(true);
+  };
+
+  const handleTeacherUnlockSuccess = () => {
+    setTeacherUnlocked(true);
+    setTeacherAuthModalOpen(false);
+    if (pendingStudentModalOpen) {
+      setPendingStudentModalOpen(false);
+      setStudentModalOpen(true);
+    }
+  };
+
+  const handleLockTeacher = () => {
+    try {
+      sessionStorage.removeItem(TEACHER_AUTH_STORAGE_KEY);
+    } catch {
+      // Abaikan jika sessionStorage tidak tersedia
+    }
+    setTeacherUnlocked(false);
+    setStudentModalOpen(false);
+    setPendingStudentModalOpen(false);
+    setTeacherAuthModalOpen(false);
+  };
+
   const hasValidSupabase = Boolean(
     health?.supabaseConfigured || isClientSupabaseConfigured,
   );
@@ -65,7 +112,7 @@ export default function App() {
         onTabChange={handleTabChange}
         loggedInStudent={loggedInStudent}
         onStudentLogout={() => setLoggedInStudent(null)}
-        onOpenStudentManager={() => setStudentModalOpen(true)}
+        onOpenStudentManager={handleOpenStudentManager}
       />
 
       {health !== null && !hasValidSupabase && (
@@ -86,17 +133,37 @@ export default function App() {
             onLoginSuccess={(student) => setLoggedInStudent(student)}
             onTableMissing={handleTableMissing}
           />
-        ) : (
+        ) : teacherUnlocked ? (
           <DashboardGuru
             refreshTrigger={teacherRefreshTrigger}
             onTableMissing={handleTableMissing}
-            onOpenStudentManager={() => setStudentModalOpen(true)}
+            onOpenStudentManager={handleOpenStudentManager}
+            onLockTeacher={handleLockTeacher}
+          />
+        ) : (
+          <TeacherAuthGate
+            onUnlockSuccess={handleTeacherUnlockSuccess}
+            onCancel={() => {
+              setPendingStudentModalOpen(false);
+              setActiveTab('siswa');
+            }}
           />
         )}
       </div>
 
+      {teacherAuthModalOpen && !teacherUnlocked && (
+        <TeacherAuthGate
+          isModal
+          onUnlockSuccess={handleTeacherUnlockSuccess}
+          onCancel={() => {
+            setPendingStudentModalOpen(false);
+            setTeacherAuthModalOpen(false);
+          }}
+        />
+      )}
+
       <StudentManagerModal
-        isOpen={studentModalOpen}
+        isOpen={teacherUnlocked && studentModalOpen}
         onClose={() => setStudentModalOpen(false)}
         onStudentsChanged={() => setTeacherRefreshTrigger((n) => n + 1)}
       />
