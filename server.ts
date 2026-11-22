@@ -1,0 +1,632 @@
+import dotenv from 'dotenv';
+import express, { type Request, type Response } from 'express';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { GoogleGenAI, Type } from '@google/genai';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+dotenv.config({ path: '.env.local' });
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT =
+  process.env.NODE_ENV === 'production'
+    ? Number(process.env.PORT) || 3000
+    : 3000;
+
+function cleanEnvValue(value: string | undefined): string {
+  return (value || '').trim().replace(/^["']|["']$/g, '');
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function getSupabaseServerClient(): SupabaseClient | null {
+  const url = cleanEnvValue(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.VITE_PUBLIC_SUPABASE_URL ||
+      process.env.VITE_SUPABASE_URL ||
+      process.env.SUPABASE_URL,
+  );
+  const anonKey = cleanEnvValue(
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.VITE_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY,
+  );
+
+  if (!url || !anonKey || !isValidHttpUrl(url)) {
+    return null;
+  }
+  try {
+    return createClient(url, anonKey);
+  } catch {
+    return null;
+  }
+}
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = cleanEnvValue(
+    process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY,
+  );
+  if (!apiKey) {
+    return null;
+  }
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+}
+
+function normalizeNoAbsen(value: string | number | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (/^\d+$/.test(raw)) {
+    return String(Number(raw));
+  }
+  return raw.toLowerCase();
+}
+
+function extractStudentName(row: Record<string, unknown>): string {
+  const candidate =
+    row.nama_lengkap ?? row.nama ?? row.nama_siswa ?? row.name ?? row.full_name;
+  if (typeof candidate === 'string' && candidate.trim()) {
+    return candidate.trim();
+  }
+  return `Siswa #${String(row.no_absen ?? row.id ?? '')}`;
+}
+
+function mapSupabaseError(error: { code?: string; message?: string }) {
+  const code = error.code || '';
+  const msg = error.message || 'Terjadi kesalahan pada database Supabase.';
+  const isMissingTable =
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    msg.includes('Could not find the table') ||
+    msg.includes('does not exist');
+
+  return {
+    status: isMissingTable ? 503 : 400,
+    body: {
+      error: isMissingTable
+        ? 'Tabel Supabase belum dibuat atau belum ditemukan di skema public.'
+        : msg,
+      code: isMissingTable ? 'TABLE_MISSING' : code || 'SUPABASE_ERROR',
+    },
+  };
+}
+
+async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    const supabaseReady = Boolean(getSupabaseServerClient());
+    const geminiReady = Boolean(
+      cleanEnvValue(
+        process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY,
+      ),
+    );
+    res.json({
+      ok: true,
+      supabaseConfigured: supabaseReady,
+      geminiConfigured: geminiReady,
+    });
+  });
+
+  app.post('/api/students/login', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error:
+          'Koneksi Supabase belum dikonfigurasi (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { no_absen, pin } = req.body ?? {};
+    if (
+      no_absen === undefined ||
+      no_absen === null ||
+      String(no_absen).trim() === '' ||
+      pin === undefined ||
+      pin === null ||
+      String(pin).trim() === ''
+    ) {
+      return res.status(400).json({
+        error: 'Nomor absen dan PIN wajib diisi.',
+      });
+    }
+
+    const { data, error } = await supabase.from('students').select('*');
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    const targetAbsen = normalizeNoAbsen(no_absen);
+    const targetPin = String(pin).trim();
+
+    const matched = (data || []).find(
+      (row: Record<string, unknown>) =>
+        normalizeNoAbsen(row.no_absen as string | number) === targetAbsen &&
+        String(row.pin ?? '').trim() === targetPin,
+    );
+
+    if (!matched) {
+      return res.status(401).json({
+        error: 'Nomor absen atau PIN siswa tidak sesuai. Silakan periksa kembali.',
+      });
+    }
+
+    return res.json({
+      student: {
+        id: matched.id,
+        no_absen: matched.no_absen,
+        nama_lengkap: extractStudentName(matched),
+        kelas: matched.kelas ?? null,
+      },
+    });
+  });
+
+  app.get('/api/students', async (_req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('students')
+      .select('*')
+      .order('no_absen', { ascending: true });
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    const students = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      no_absen: row.no_absen,
+      nama_lengkap: extractStudentName(row),
+      kelas: row.kelas ?? null,
+    }));
+
+    return res.json({ students });
+  });
+
+  app.post('/api/students', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { no_absen, nama_lengkap, nama, pin, kelas } = req.body ?? {};
+    const fullName = String(nama_lengkap ?? nama ?? '').trim();
+    if (!no_absen || !fullName || !pin) {
+      return res.status(400).json({
+        error: 'Nomor absen, nama lengkap siswa, dan PIN wajib diisi.',
+      });
+    }
+
+    const basePayload: Record<string, unknown> = {
+      no_absen: String(no_absen).trim(),
+      nama_lengkap: fullName,
+      pin: String(pin).trim(),
+    };
+    if (kelas && String(kelas).trim()) {
+      basePayload.kelas = String(kelas).trim();
+    }
+
+    let { data, error } = await supabase
+      .from('students')
+      .insert([basePayload])
+      .select('*')
+      .single();
+
+    if (error && basePayload.kelas && error.message?.includes('kelas')) {
+      delete basePayload.kelas;
+      const retry = await supabase
+        .from('students')
+        .insert([basePayload])
+        .select('*')
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.status(201).json({
+      student: {
+        id: data.id,
+        no_absen: data.no_absen,
+        nama_lengkap: extractStudentName(data),
+        kelas: data.kelas ?? null,
+      },
+    });
+  });
+
+  app.get('/api/assignments', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const role = req.query.role === 'teacher' ? 'teacher' : 'student';
+
+    const initialRes =
+      role === 'teacher'
+        ? await supabase
+            .from('assignments')
+            .select('id, judul, instruksi_soal, kunci_rubrik, created_at')
+            .order('created_at', { ascending: false })
+        : await supabase
+            .from('assignments')
+            .select('id, judul, instruksi_soal, created_at')
+            .order('created_at', { ascending: false });
+
+    let data: unknown[] | null = initialRes.data;
+    let error = initialRes.error;
+
+    if (error && error.message?.includes('created_at')) {
+      const retry =
+        role === 'teacher'
+          ? await supabase
+              .from('assignments')
+              .select('id, judul, instruksi_soal, kunci_rubrik')
+              .order('id', { ascending: false })
+          : await supabase
+              .from('assignments')
+              .select('id, judul, instruksi_soal')
+              .order('id', { ascending: false });
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.json({ assignments: data || [] });
+  });
+
+  app.post('/api/assignments', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { judul, instruksi_soal, kunci_rubrik } = req.body ?? {};
+    if (
+      !judul?.trim() ||
+      !instruksi_soal?.trim() ||
+      !kunci_rubrik?.trim()
+    ) {
+      return res.status(400).json({
+        error: 'Judul tugas, instruksi soal, dan kunci rubrik wajib diisi.',
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('assignments')
+      .insert([
+        {
+          judul: judul.trim(),
+          instruksi_soal: instruksi_soal.trim(),
+          kunci_rubrik: kunci_rubrik.trim(),
+        },
+      ])
+      .select('*')
+      .single();
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.status(201).json({ assignment: data });
+  });
+
+  app.delete('/api/assignments/:id', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const { id } = req.params;
+    const { error } = await supabase.from('assignments').delete().eq('id', id);
+
+    if (error) {
+      const mapped = mapSupabaseError(error);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    return res.json({ deleted: true });
+  });
+
+  app.get('/api/submissions', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const studentId = req.query.student_id
+      ? String(req.query.student_id)
+      : null;
+    const assignmentId = req.query.assignment_id
+      ? String(req.query.assignment_id)
+      : null;
+
+    let query = supabase.from('submissions').select('*');
+    if (studentId) {
+      query = query.eq('student_id', studentId);
+    }
+    if (assignmentId) {
+      query = query.eq('assignment_id', assignmentId);
+    }
+
+    let { data: subRows, error: subError } = await query.order('created_at', {
+      ascending: false,
+    });
+
+    if (subError && subError.message?.includes('created_at')) {
+      let retryQuery = supabase.from('submissions').select('*');
+      if (studentId) retryQuery = retryQuery.eq('student_id', studentId);
+      if (assignmentId) retryQuery = retryQuery.eq('assignment_id', assignmentId);
+      const retry = await retryQuery.order('id', { ascending: false });
+      subRows = retry.data;
+      subError = retry.error;
+    }
+
+    if (subError) {
+      const mapped = mapSupabaseError(subError);
+      return res.status(mapped.status).json(mapped.body);
+    }
+
+    const [studentsResult, assignmentsResult] = await Promise.all([
+      supabase.from('students').select('*'),
+      supabase.from('assignments').select('id, judul'),
+    ]);
+
+    const studentMap = new Map<
+      string,
+      { nama: string; no_absen: string | number }
+    >();
+    if (!studentsResult.error && studentsResult.data) {
+      for (const s of studentsResult.data as Record<string, unknown>[]) {
+        studentMap.set(String(s.id), {
+          nama: extractStudentName(s),
+          no_absen: (s.no_absen as string | number) ?? '-',
+        });
+      }
+    }
+
+    const assignmentMap = new Map<string, string>();
+    if (!assignmentsResult.error && assignmentsResult.data) {
+      for (const a of assignmentsResult.data as Record<string, unknown>[]) {
+        assignmentMap.set(String(a.id), String(a.judul ?? 'Tugas'));
+      }
+    }
+
+    const enriched = (subRows || []).map((row: Record<string, unknown>) => {
+      const st = studentMap.get(String(row.student_id));
+      const title = assignmentMap.get(String(row.assignment_id));
+      return {
+        id: row.id,
+        student_id: row.student_id,
+        assignment_id: row.assignment_id,
+        jawaban_teks: row.jawaban_teks,
+        nilai: Number(row.nilai ?? 0),
+        umpan_balik_ai: String(row.umpan_balik_ai ?? ''),
+        created_at: row.created_at ?? null,
+        student_name: st?.nama ?? `Siswa (${String(row.student_id)})`,
+        student_no_absen: st?.no_absen ?? '-',
+        assignment_title: title ?? `Tugas (${String(row.assignment_id)})`,
+      };
+    });
+
+    return res.json({ submissions: enriched });
+  });
+
+  app.post('/api/grade-and-submit', async (req: Request, res: Response) => {
+    const supabase = getSupabaseServerClient();
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'Koneksi Supabase belum dikonfigurasi.',
+        code: 'SUPABASE_NOT_CONFIGURED',
+      });
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error:
+          'GEMINI_API_KEY belum tersedia di lingkungan server. Silakan atur di panel Secrets.',
+        code: 'GEMINI_NOT_CONFIGURED',
+      });
+    }
+
+    const { student_id, assignment_id, jawaban_teks } = req.body ?? {};
+    if (!student_id || !assignment_id || !jawaban_teks?.trim()) {
+      return res.status(400).json({
+        error: 'ID siswa, ID tugas, dan jawaban teks wajib diisi.',
+      });
+    }
+
+    const cleanAnswer = String(jawaban_teks).trim();
+
+    const [{ data: assignment, error: assignmentErr }, { data: student }] =
+      await Promise.all([
+        supabase
+          .from('assignments')
+          .select('id, judul, instruksi_soal, kunci_rubrik')
+          .eq('id', assignment_id)
+          .single(),
+        supabase
+          .from('students')
+          .select('*')
+          .eq('id', student_id)
+          .single(),
+      ]);
+
+    if (assignmentErr || !assignment) {
+      return res.status(404).json({
+        error: 'Tugas yang dipilih tidak ditemukan di database.',
+      });
+    }
+
+    const studentName = student
+      ? extractStudentName(student as Record<string, unknown>)
+      : 'Ananda';
+
+    try {
+      const prompt = [
+        `Nama Siswa: ${studentName}`,
+        `Judul Tugas: ${assignment.judul}`,
+        `Instruksi Soal:\n${assignment.instruksi_soal}`,
+        `Kunci Jawaban & Rubrik Penilaian:\n${assignment.kunci_rubrik}`,
+        `Jawaban Siswa:\n${cleanAnswer}`,
+        '',
+        'Berikan penilaian angka bulat 0-100 yang adil sesuai kunci rubrik untuk tingkat Sekolah Dasar (SD), serta umpan balik yang ramah, jelas, menyemangati, dan menjelaskan bagian mana yang sudah tepat serta apa yang perlu diperbaiki.',
+      ].join('\n\n');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          systemInstruction:
+            'Anda adalah Asisten Guru SDN Nguling 3 yang bijaksana, ramah terhadap siswa Sekolah Dasar, dan objektif. Evaluasi jawaban teks siswa berdasarkan instruksi soal dan kunci rubrik yang diberikan guru. Kembalikan output JSON valid sesuai skema.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              nilai: {
+                type: Type.INTEGER,
+                description: 'Skor penilaian siswa dari 0 sampai 100.',
+              },
+              umpan_balik_ai: {
+                type: Type.STRING,
+                description:
+                  'Umpan balik pedagogis berbahasa Indonesia yang ramah, jelas, dan memotivasi untuk siswa SD.',
+              },
+            },
+            required: ['nilai', 'umpan_balik_ai'],
+          },
+        },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        return res.status(502).json({
+          error: 'Gemini AI tidak mengembalikan hasil penilaian. Silakan coba lagi.',
+        });
+      }
+
+      const parsed = JSON.parse(rawText) as {
+        nilai?: number;
+        umpan_balik_ai?: string;
+      };
+
+      const nilaiFinal = Math.max(
+        0,
+        Math.min(100, Math.round(Number(parsed.nilai ?? 0))),
+      );
+      const umpanBalikFinal = String(
+        parsed.umpan_balik_ai ||
+          'Terima kasih sudah mengumpulkan jawaban. Terus semangat belajar!',
+      ).trim();
+
+      const { data: saved, error: insertErr } = await supabase
+        .from('submissions')
+        .insert([
+          {
+            student_id,
+            assignment_id,
+            jawaban_teks: cleanAnswer,
+            nilai: nilaiFinal,
+            umpan_balik_ai: umpanBalikFinal,
+          },
+        ])
+        .select('*')
+        .single();
+
+      if (insertErr) {
+        const mapped = mapSupabaseError(insertErr);
+        return res.status(mapped.status).json(mapped.body);
+      }
+
+      return res.status(201).json({
+        submission: {
+          ...saved,
+          nilai: nilaiFinal,
+          umpan_balik_ai: umpanBalikFinal,
+        },
+      });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Gagal menghubungi layanan Gemini AI.';
+      console.error('Gemini grading error:', message);
+      return res.status(502).json({
+        error: `Proses koreksi AI gagal: ${message}`,
+      });
+    }
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(__dirname, 'dist');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Asisten Guru SDN Nguling 3 server listening on port ${PORT}`);
+  });
+}
+
+startServer();

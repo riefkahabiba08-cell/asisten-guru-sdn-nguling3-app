@@ -1,0 +1,6 @@
+{
+  "name": "Asisten Guru SDN Nguling 3",
+  "description": "Aplikasi web Asisten Administrasi dan Koreksi Otomatis SD untuk SDN Nguling 3 dengan Portal Siswa, Dashboard Guru, Supabase, dan Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
