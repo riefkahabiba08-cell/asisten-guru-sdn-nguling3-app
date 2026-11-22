@@ -74,24 +74,50 @@ function getGeminiClient(): GoogleGenAI | null {
 async function generateContentWithRetry(
   ai: GoogleGenAI,
   params: Parameters<GoogleGenAI['models']['generateContent']>[0],
-  maxAttempts = 3,
 ) {
+  const fallbackModels = Array.from(
+    new Set([
+      params.model,
+      'gemini-4-hydrogen',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+    ]),
+  );
+
   let lastError: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await ai.models.generateContent(params);
-    } catch (err: unknown) {
-      lastError = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      const isTransient =
-        msg.includes('503') ||
-        msg.includes('UNAVAILABLE') ||
-        msg.includes('429') ||
-        msg.includes('RESOURCE_EXHAUSTED');
-      if (!isTransient || attempt === maxAttempts) {
+  for (const modelName of fallbackModels) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await ai.models.generateContent({
+          ...params,
+          model: modelName,
+        });
+      } catch (err: unknown) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const lower = msg.toLowerCase();
+        const isNotFound = msg.includes('404') || lower.includes('not_found');
+        const isTransient =
+          msg.includes('503') ||
+          msg.includes('429') ||
+          lower.includes('unavailable') ||
+          lower.includes('resource_exhausted') ||
+          lower.includes('high demand') ||
+          lower.includes('overloaded');
+
+        if (isNotFound) {
+          break;
+        }
+        if (isTransient) {
+          if (attempt === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            continue;
+          }
+          break;
+        }
         throw err;
       }
-      await new Promise((resolve) => setTimeout(resolve, attempt * 900));
     }
   }
   throw lastError;

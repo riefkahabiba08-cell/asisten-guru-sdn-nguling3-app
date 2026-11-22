@@ -87,16 +87,17 @@ async function callGeminiRestClient<T>(params: {
   }
 
   const candidateModels = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
     'gemini-4-hydrogen',
     'gemini-3.1-flash-lite',
-    'gemini-2.5-flash',
   ];
   let lastErrorMessage = 'Gagal menghubungi Gemini API.';
 
   for (const modelName of candidateModels) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -128,17 +129,29 @@ async function callGeminiRestClient<T>(params: {
         if (!res.ok) {
           const errMsg =
             payload.error?.message || `Gemini API error (${res.status})`;
-          lastErrorMessage = errMsg;
+          const lowerMsg = errMsg.toLowerCase();
+          lastErrorMessage = `${modelName}: ${errMsg}`;
 
           if (res.status === 404) {
-            // Model tidak ditemukan untuk API key ini, coba model fallback berikutnya
+            // Model tidak tersedia untuk kunci API ini, langsung pindah ke model berikutnya
             break;
           }
 
-          const isTransient = res.status === 429 || res.status === 503;
-          if (isTransient && attempt < 3) {
-            await new Promise((resolve) => setTimeout(resolve, attempt * 900));
-            continue;
+          const isTransientOrDemand =
+            res.status === 429 ||
+            res.status === 503 ||
+            lowerMsg.includes('high demand') ||
+            lowerMsg.includes('unavailable') ||
+            lowerMsg.includes('resource_exhausted') ||
+            lowerMsg.includes('overloaded');
+
+          if (isTransientOrDemand) {
+            if (attempt === 1) {
+              await new Promise((resolve) => setTimeout(resolve, 600));
+              continue;
+            }
+            // Masih 503/429/high demand, otomatis pindah mencoba model fallback berikutnya
+            break;
           }
 
           return {
@@ -150,11 +163,8 @@ async function callGeminiRestClient<T>(params: {
 
         const rawText = payload.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
         if (!rawText.trim()) {
-          return {
-            ok: false,
-            error: 'Gemini AI tidak mengembalikan teks hasil.',
-            code: 'GEMINI_EMPTY_RESPONSE',
-          };
+          lastErrorMessage = `${modelName}: respons AI kosong.`;
+          break;
         }
 
         const parsed = parseJsonSafely<T>(rawText);
@@ -162,10 +172,11 @@ async function callGeminiRestClient<T>(params: {
       } catch (err: unknown) {
         lastErrorMessage =
           err instanceof Error ? err.message : 'Gangguan jaringan ke Gemini API.';
-        if (attempt < 3) {
-          await new Promise((resolve) => setTimeout(resolve, attempt * 900));
+        if (attempt === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
           continue;
         }
+        break;
       }
     }
   }
